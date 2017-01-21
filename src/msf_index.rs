@@ -93,9 +93,9 @@ impl MsfIndex {
 
     pub fn to_bcd_values(&self) -> (u8, u8, u8) {
         let MsfIndex(m,s,f) = *self;
-        let m_bcd = ((m / 10) << 4) | m & 0x0f;
-        let s_bcd = ((s / 10) << 4) | s & 0x0f;
-        let f_bcd = ((f / 10) << 4) | f & 0x0f;
+        let m_bcd = ((m / 10) << 4) + (m % 10);
+        let s_bcd = ((s / 10) << 4) + (s % 10);
+        let f_bcd = ((f / 10) << 4) + (s % 10);
         (m_bcd, s_bcd, f_bcd)
     }
 }
