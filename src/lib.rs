@@ -23,8 +23,10 @@ pub enum CueParseError {
     InvalidTrackLine,
     InvalidTrackNumber,
     NoTracks,
+    TrackWithoutIndex01,
     UnknownTrackType(String),
     UnknownBinMode(String),
+    InvalidPregapLine,
     InvalidIndexLine,
     InvalidIndexNumber,
     NoBinFiles,
@@ -138,8 +140,15 @@ impl TrackType {
 }
 
 #[derive(Clone)]
+enum Pregap {
+    Index00(MsfIndex),
+    Silence(MsfIndex)
+}
+
+#[derive(Clone)]
 struct Track {
     track_type: TrackType,
+    pregap: Option<Pregap>,
     indices: Vec<MsfIndex>
 }
 
@@ -188,6 +197,7 @@ fn parse_track_line(line: &str) -> Result<(Track, u8), CueParseError> {
     let track_type = TrackType::try_from_str(line_elems[2])?;
     let track = Track {
         track_type: track_type,
+        pregap: None,
         indices: Vec::new()
     };
     Ok((track, track_number))
@@ -202,6 +212,16 @@ fn parse_index_line(line: &str) -> Result<(MsfIndex, u8), CueParseError> {
     let index_number = line_elems[1].parse()?;
     let index = MsfIndex::try_from_str(line_elems[2])?;
     Ok((index, index_number))
+}
+
+fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueParseError> {
+    let line = line.trim();
+    let line_elems = line.split_whitespace().collect::<Vec<&str>>();
+    if line_elems.len() != 2 {
+        return Err(CueParseError::InvalidPregapLine);
+    }
+    let index = MsfIndex::try_from_str(line_elems[1])?;
+    Ok(index)
 }
 
 impl Cuesheet {
@@ -233,6 +253,9 @@ impl Cuesheet {
                     "TRACK" => {
                         if let Some(ref mut bin_file) = current_bin_file {
                             if let Some(prev_track) = current_track {
+                                if prev_track.indices.len() == 0 {
+                                    return Err(CueParseError::TrackWithoutIndex01);
+                                }
                                 bin_file.tracks.push(prev_track);
                             }
                             let (next_track, next_track_number) = parse_track_line(line)?;
@@ -250,22 +273,30 @@ impl Cuesheet {
                     }
                     "PERFORMER" | "TITLE" => {} // TODO
                     "PREGAP" => {
-                        // TODO: Handle this command properly
-                        if let None = current_track {
+                        if let Some(ref mut track) = current_track {
+                            if track.pregap.is_some() {
+                                // FIXME: Maybe use a more descriptive error message?
+                                return Err(CueParseError::InvalidIndexNumber);
+                            }
+                            track.pregap = Some(Pregap::Silence(parse_pregap_line(line)?));
+                        } else {
                             return Err(CueParseError::PregapCommandWithoutTrack);
                         }
                     }
                     "INDEX" => {
-                        // TODO: Handle "INDEX 00", seems to be used for
-                        // connecting two tracks together when playing an
-                        // audio CD continuously.
-
                         if let Some(ref mut track) = current_track {
                             let (index, index_number) = parse_index_line(line)?;
-                            if index_number as usize != track.indices.len() + 1 {
+                            if index_number == 0 {
+                                if track.pregap.is_some() {
+                                    // FIXME: Maybe use a more descriptive error message?
+                                    return Err(CueParseError::InvalidIndexNumber);
+                                }
+                                track.pregap = Some(Pregap::Index00(index));
+                            } else if index_number as usize != track.indices.len() + 1 {
                                 return Err(CueParseError::InvalidIndexNumber);
+                            } else {
+                                track.indices.push(index);
                             }
-                            track.indices.push(index);
                         } else {
                             return Err(CueParseError::IndexCommandWithoutTrack);
                         }
