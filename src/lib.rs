@@ -11,12 +11,13 @@ use std::str;
 
 use memmap::{Mmap, Protection};
 
-pub use self::msf_index::{MsfIndex, MsfParseError};
+pub use self::msf_index::{MsfIndex, MsfParseError, MsfOverflow};
 
 
 #[derive(Debug)]
 pub enum CueParseError {
     MsfParseError(MsfParseError),
+    MsfOverflow(MsfOverflow),
     ParseIntError(std::num::ParseIntError),
     IoError(std::io::Error),
     InvalidCommandError(String),
@@ -34,7 +35,9 @@ pub enum CueParseError {
     TrackCommandWithoutBinFile,
     PregapCommandWithoutTrack,
     IndexCommandWithoutTrack,
-    Utf8Error(str::Utf8Error)
+    Utf8Error(str::Utf8Error),
+    OutOfRange,
+    NoLocationSet
 }
 
 
@@ -92,6 +95,12 @@ impl From<MsfParseError> for CueParseError {
     }
 }
 
+impl From<MsfOverflow> for CueParseError {
+    fn from(err: MsfOverflow) -> CueParseError {
+        CueParseError::MsfOverflow(err)
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BinMode {
     Binary,
@@ -139,7 +148,7 @@ impl TrackType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 enum Pregap {
     Index00(MsfIndex),
     Silence(MsfIndex)
@@ -149,7 +158,19 @@ enum Pregap {
 struct Track {
     track_type: TrackType,
     pregap: Option<Pregap>,
-    indices: Vec<MsfIndex>
+    indices: Vec<MsfIndex>,
+    num_sectors: usize
+}
+
+impl Track {
+    fn get_first_msf(&self) -> MsfIndex {
+        if let Some(pregap) = self.pregap {
+            if let Pregap::Index00(msf) = pregap {
+                return msf;
+            }
+        }
+        return self.indices.first().unwrap().clone();
+    }
 }
 
 struct BinFile {
@@ -158,8 +179,50 @@ struct BinFile {
     tracks: Vec<Track>
 }
 
+impl BinFile {
+    fn get_num_sectors(&self) -> usize {
+        self.file.len() / 2352
+    }
+
+    // Checks whether the given tracks are valid, calculates their lengths and
+    // adds them to the BinFile.
+    fn finalize(&mut self, tracks: Vec<TempTrackMetadata>) -> Result<(), CueParseError> {
+        for win in tracks.windows(2) {
+            let ref current_track = win[0];
+            let ref next_track = win[1];
+            if current_track.indices.is_empty() || next_track.indices.is_empty() {
+                return Err(CueParseError::TrackWithoutIndex01);
+            }
+            let length = (next_track.get_first_msf() - current_track.get_first_msf())?;
+            let track = Track {
+                track_type: current_track.track_type.clone(),
+                pregap: current_track.pregap.clone(),
+                indices: current_track.indices.clone(),
+                num_sectors: length.to_sectors()
+            };
+            self.tracks.push(track);
+        }
+        let last_track_metadata = tracks.last().unwrap();
+        let last_track_sectors = self.get_num_sectors()
+                                 - last_track_metadata.get_first_msf().to_sectors();
+        let last_track = Track {
+            track_type: last_track_metadata.track_type.clone(),
+            pregap: last_track_metadata.pregap.clone(),
+            indices: last_track_metadata.indices.clone(),
+            num_sectors: last_track_sectors
+        };
+        self.tracks.push(last_track);
+
+        if self.tracks.is_empty() {
+            return Err(CueParseError::NoTracks);
+        }
+        Ok(())
+    }
+}
+
 pub struct Cuesheet {
-    bin_files: Vec<BinFile>
+    bin_files: Vec<BinFile>,
+    location: Option<Location>
 }
 
 fn parse_file_line(line: &str, cue_dir: Option<&Path>) -> Result<BinFile, CueParseError> {
@@ -187,7 +250,7 @@ fn parse_file_line(line: &str, cue_dir: Option<&Path>) -> Result<BinFile, CuePar
     })
 }
 
-fn parse_track_line(line: &str) -> Result<(Track, u8), CueParseError> {
+fn parse_track_line(line: &str) -> Result<(TempTrackMetadata, u8), CueParseError> {
     let line = line.trim();
     let line_elems = line.split_whitespace().collect::<Vec<&str>>();
     if line_elems.len() < 3 {
@@ -195,15 +258,15 @@ fn parse_track_line(line: &str) -> Result<(Track, u8), CueParseError> {
     }
     let track_number = line_elems[1].parse()?;
     let track_type = TrackType::try_from_str(line_elems[2])?;
-    let track = Track {
+    let track = TempTrackMetadata {
         track_type: track_type,
         pregap: None,
-        indices: Vec::new()
+        indices: Vec::new(),
     };
     Ok((track, track_number))
 }
 
-fn parse_index_line(line: &str) -> Result<(MsfIndex, u8), CueParseError> {
+fn parse_index_line(line: &str) -> Result<(u8, MsfIndex), CueParseError> {
     let line = line.trim();
     let line_elems = line.split_whitespace().collect::<Vec<&str>>();
     if line_elems.len() < 3 {
@@ -211,7 +274,7 @@ fn parse_index_line(line: &str) -> Result<(MsfIndex, u8), CueParseError> {
     }
     let index_number = line_elems[1].parse()?;
     let index = MsfIndex::try_from_str(line_elems[2])?;
-    Ok((index, index_number))
+    Ok((index_number, index))
 }
 
 fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueParseError> {
@@ -224,6 +287,23 @@ fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueParseError> {
     Ok(index)
 }
 
+struct TempTrackMetadata {
+    track_type: TrackType,
+    pregap: Option<Pregap>,
+    indices: Vec<MsfIndex>
+}
+
+impl TempTrackMetadata {
+    fn get_first_msf(&self) -> MsfIndex {
+        if let Some(pregap) = self.pregap {
+            if let Pregap::Index00(msf) = pregap {
+                return msf;
+            }
+        }
+        return self.indices.first().unwrap().clone();
+    }
+}
+
 impl Cuesheet {
     pub fn open_cue<P>(path: P) -> Result<Cuesheet, CueParseError>
         where P: AsRef<Path>
@@ -233,17 +313,24 @@ impl Cuesheet {
         let cue_str = str::from_utf8(cue_bytes)?;
 
         let mut bin_files: Vec<BinFile> = Vec::new();
-        let mut current_bin_file: Option<BinFile> = None;
-        let mut current_track: Option<Track> = None;
         let mut current_track_number = 0;
+        let mut current_bin_file: Option<BinFile> = None;
+        let mut current_track: Option<TempTrackMetadata> = None;
+        let mut tracks_for_current_bin_file: Vec<TempTrackMetadata> = Vec::new();
 
         for line in cue_str.lines() {
             if let Some(command) = line.split_whitespace().next() {
                 let cmd_uppercase = command.to_uppercase();
                 match cmd_uppercase.as_str() {
                     "FILE" => {
-                        if let Some(prev_bin_file) = current_bin_file {
-                            bin_files.push(prev_bin_file);
+                        if let Some(mut current_bin_file) = current_bin_file {
+                            if let Some(track) = current_track {
+                                tracks_for_current_bin_file.push(track);
+                            }
+                            current_track = None;
+                            current_bin_file.finalize(tracks_for_current_bin_file)?;
+                            tracks_for_current_bin_file = Vec::new();
+                            bin_files.push(current_bin_file);
                         }
                         current_bin_file = Some(parse_file_line(line, path.as_ref().parent())?);
                         if current_bin_file.as_ref().unwrap().bin_mode != BinMode::Binary {
@@ -251,22 +338,16 @@ impl Cuesheet {
                         }
                     }
                     "TRACK" => {
-                        if let Some(ref mut bin_file) = current_bin_file {
-                            if let Some(prev_track) = current_track {
-                                if prev_track.indices.len() == 0 {
-                                    return Err(CueParseError::TrackWithoutIndex01);
-                                }
-                                bin_file.tracks.push(prev_track);
+                        if current_bin_file.is_some() {
+                            if let Some(track) = current_track {
+                                tracks_for_current_bin_file.push(track);
                             }
-                            let (next_track, next_track_number) = parse_track_line(line)?;
-                            if next_track_number != current_track_number + 1 {
+                            let (track, track_number) = parse_track_line(line)?;
+                            if track_number != current_track_number + 1 {
                                 return Err(CueParseError::InvalidTrackNumber);
                             }
-                            current_track_number = next_track_number;
-                            current_track = Some(next_track);
-                            debug!("New track, number: {}, mode: {:?}",
-                                current_track_number,
-                                current_track.as_ref().unwrap().track_type);
+                            current_track_number = track_number;
+                            current_track = Some(track);
                         } else {
                             return Err(CueParseError::TrackCommandWithoutBinFile);
                         }
@@ -278,16 +359,20 @@ impl Cuesheet {
                                 // FIXME: Maybe use a more descriptive error message?
                                 return Err(CueParseError::InvalidIndexNumber);
                             }
-                            track.pregap = Some(Pregap::Silence(parse_pregap_line(line)?));
+                            // TODO: Parse the pregap line and remember the length of it,
+                            // since it is not in the bin file and it must be considered
+                            // for calculating the offset into the bin files from now on
                         } else {
                             return Err(CueParseError::PregapCommandWithoutTrack);
                         }
                     }
                     "INDEX" => {
                         if let Some(ref mut track) = current_track {
-                            let (index, index_number) = parse_index_line(line)?;
+                            let (index_number, index) = parse_index_line(line)?;
                             if index_number == 0 {
                                 if track.pregap.is_some() {
+                                    // INDEX 00 is also a type of pregap, so we have two
+                                    // pregaps at this point.
                                     // FIXME: Maybe use a more descriptive error message?
                                     return Err(CueParseError::InvalidIndexNumber);
                                 }
@@ -310,17 +395,21 @@ impl Cuesheet {
                 }
             }
         }
-        if let Some(last_bin_file) = current_bin_file {
+        if let Some(mut last_bin_file) = current_bin_file {
+            if let Some(last_track) = current_track {
+                tracks_for_current_bin_file.push(last_track);
+            } else {
+                return Err(CueParseError::NoTracks);
+            }
+            last_bin_file.finalize(tracks_for_current_bin_file)?;
             bin_files.push(last_bin_file);
         } else {
             return Err(CueParseError::NoBinFiles);
         }
-        if let Some(last_track) = current_track {
-            bin_files.last_mut().unwrap().tracks.push(last_track);
-        } else {
-            return Err(CueParseError::NoTracks);
-        }
-        Ok(Cuesheet{ bin_files: bin_files })
+        Ok(Cuesheet{
+            bin_files: bin_files,
+            location: None
+        })
     }
 
     pub fn get_num_bin_files(&self) -> usize {
@@ -331,13 +420,108 @@ impl Cuesheet {
         std::iter::Sum::sum(self.bin_files.iter().map(|x| x.tracks.len()))
     }
 
-    // Returns the sector's full 2352 bytes, regardless of the track type
-    pub fn get_full_sector(&self, msf: &MsfIndex) -> &[u8] {
-        // TODO: Make multi-bin compatible
-        let offset = msf.to_offset();
-        let slice = unsafe { &self.bin_files[0].file.as_slice()[offset..offset + 2352] };
-        slice
+    pub fn get_current_track(&self) -> Result<u8, CueParseError> {
+        if let Some(ref loc) = self.location {
+            Ok(loc.track_no as u8 + 1)
+        } else {
+            Err(CueParseError::NoLocationSet)
+        }
     }
+
+    pub fn get_current_track_local_msf(&self) -> Result<MsfIndex, CueParseError> {
+        if let Some(ref loc) = self.location {
+            Ok(MsfIndex::from_sectors(loc.local_sector)?)
+        } else {
+            Err(CueParseError::NoLocationSet)
+        }
+    }
+
+    pub fn get_current_global_msf(&self) -> Result<MsfIndex, CueParseError> {
+        if let Some(ref loc) = self.location {
+            // HACK! I think we need to subtract the real amount of pregaps here
+            let global_msf = (loc.global_msf.clone() + MsfIndex::new(0,2,0).unwrap())?;
+            debug!("before: {:?}, after: {:?}", loc.global_msf, global_msf);
+            Ok(global_msf)
+        } else {
+            Err(CueParseError::NoLocationSet)
+        }
+    }
+
+    // TODO: Change error type
+    pub fn set_location(&mut self, msf: &MsfIndex) -> Result<(), CueParseError> {
+        // HACK! I think we need to subtract the real amount of pregaps here
+        let real_msf = (*msf - MsfIndex::new(0,2,0).unwrap()).unwrap();
+        let sector_no = real_msf.to_sectors();
+        debug!("Sector Number: {}", sector_no);
+
+        let mut bin_pos_on_disc = 0;
+        // Find correct bin file
+        'bin_loop: for (bin_i, bin) in self.bin_files.iter().enumerate() {
+            debug!("{} {}", bin_i, bin.get_num_sectors());
+            if (bin_pos_on_disc + bin.get_num_sectors()) > sector_no {
+                // Find correct track
+                let mut track_pos_on_disc = bin_pos_on_disc;
+                for (track_i, track) in bin.tracks.iter().enumerate() {
+                    if (track_pos_on_disc + track.num_sectors) > sector_no {
+                        let real_msf_in_sectors = real_msf.to_sectors();
+                        self.location = Some(Location {
+                            bin_file_no: bin_i,
+                            track_no: track_i,
+                            global_msf: real_msf,
+                            local_sector: (real_msf_in_sectors - bin_pos_on_disc),
+                            sectors_left: track.num_sectors - (real_msf_in_sectors - track_pos_on_disc)
+                        });
+                        return Ok(());
+                    } else {
+                        track_pos_on_disc += track.num_sectors;
+                    }
+                }
+            } else {
+                bin_pos_on_disc += bin.get_num_sectors();
+            }
+        }
+        Err(CueParseError::OutOfRange)
+    }
+
+    pub fn get_next_sector(&mut self) -> Result<&[u8], CueParseError> {
+        if self.location.is_none() {
+            return Err(CueParseError::NoLocationSet);
+        }
+
+        let current_bin_file;
+        let current_sector;
+        {
+            let mut loc = self.location.as_mut().unwrap();
+            current_bin_file = loc.bin_file_no;
+            current_sector = loc.local_sector;
+            loc.local_sector += 1;
+            assert!(loc.sectors_left > 0);
+            loc.sectors_left -= 1;
+            loc.global_msf = loc.global_msf.next()?;
+        }
+        let new_loc = self.location.as_ref().unwrap().clone();
+        if new_loc.sectors_left == 0 {
+            self.set_location(&new_loc.global_msf)?;
+        }
+
+        let offset = current_sector * 2352;
+        unsafe {
+            Ok(&self.bin_files[current_bin_file].file.as_slice()[offset..offset + 2352])
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Location {
+    bin_file_no: usize,
+    track_no: usize,
+    global_msf: MsfIndex,
+
+    // Sector number local to the current bin file
+    local_sector: usize,
+
+    // Number of sectors left until the track changes
+    sectors_left: usize
 }
 
 

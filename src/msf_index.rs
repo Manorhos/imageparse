@@ -1,4 +1,5 @@
 use std;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
 use std::ops::{Add, Sub};
@@ -39,7 +40,7 @@ impl From<std::num::ParseIntError> for MsfParseError {
 
 
 // MsfIndex(minutes, seconds, frame), not BCD encoded
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MsfIndex(u8, u8, u8);
 
 impl MsfIndex {
@@ -82,9 +83,22 @@ impl MsfIndex {
         }
     }
 
+    pub fn from_sectors(mut sectors: usize) -> Result<MsfIndex, MsfParseError> {
+        let m = sectors / (60 * 75);
+        sectors -= m * 60 * 75;
+        let s = sectors / 60;
+        sectors -= s * 60;
+        let f = sectors;
+        MsfIndex::new(m as u8, s as u8, f as u8)
+    }
+
     pub fn to_offset(&self) -> usize {
-        let MsfIndex(m,s,f) = (*self - MsfIndex::new(0, 2, 0).unwrap()).unwrap();
-        (m as usize * 60 * 75 + s as usize * 75 + f as usize) * 2352
+        self.to_sectors() * 2352
+    }
+
+    pub fn to_sectors(&self) -> usize {
+        let MsfIndex(m,s,f) = *self;
+        (m as usize * 60 * 75 + s as usize * 75 + f as usize)
     }
 
     pub fn next(&self) -> Result<MsfIndex, MsfOverflow> {
@@ -95,7 +109,9 @@ impl MsfIndex {
         let MsfIndex(m,s,f) = *self;
         let m_bcd = ((m / 10) << 4) + (m % 10);
         let s_bcd = ((s / 10) << 4) + (s % 10);
-        let f_bcd = ((f / 10) << 4) + (s % 10);
+        let f_bcd = ((f / 10) << 4) + (f % 10);
+        debug!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x}",
+               m, s, f, m_bcd, s_bcd, f_bcd);
         (m_bcd, s_bcd, f_bcd)
     }
 }
@@ -206,7 +222,19 @@ impl Sub for MsfIndex {
     }
 }
 
+impl Ord for MsfIndex {
+    fn cmp(&self, other: &MsfIndex) -> Ordering {
+        let self_sector = self.to_sectors();
+        let other_sector = &other.to_sectors();
+        self_sector.cmp(other_sector)
+    }
+}
 
+impl PartialOrd for MsfIndex {
+    fn partial_cmp(&self, other: &MsfIndex) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 #[cfg(test)]
 mod tests {
