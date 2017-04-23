@@ -83,12 +83,14 @@ impl MsfIndex {
         }
     }
 
-    pub fn from_sectors(mut sectors: usize) -> Result<MsfIndex, MsfParseError> {
-        let m = sectors / (60 * 75);
-        sectors -= m * 60 * 75;
-        let s = sectors / 60;
-        sectors -= s * 60;
-        let f = sectors;
+    pub fn from_sectors(sectors: usize) -> Result<MsfIndex, MsfParseError> {
+        let mut temp_sectors = sectors;
+        let m = temp_sectors / (60 * 75);
+        temp_sectors -= m * 60 * 75;
+        let s = temp_sectors / 75;
+        temp_sectors -= s * 75;
+        let f = temp_sectors;
+        debug!("MsfIndex::from_sectors({}) -> ({},{},{})", sectors, m, s, f);
         MsfIndex::new(m as u8, s as u8, f as u8)
     }
 
@@ -110,7 +112,7 @@ impl MsfIndex {
         let m_bcd = ((m / 10) << 4) + (m % 10);
         let s_bcd = ((s / 10) << 4) + (s % 10);
         let f_bcd = ((f / 10) << 4) + (f % 10);
-        debug!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x}",
+        debug!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x})",
                m, s, f, m_bcd, s_bcd, f_bcd);
         (m_bcd, s_bcd, f_bcd)
     }
