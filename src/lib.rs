@@ -488,8 +488,6 @@ impl Cuesheet {
 
                 let pos_on_disc = bin_pos_on_disc + track_index_one;
 
-                println!("pos {}", pos_on_disc);
-
                 // HACK! I think we need to add the real amount of pregaps here
                 let physical_msf = (MsfIndex::from_sectors(pos_on_disc)? +
                                     MsfIndex::new(0,2,0)?)?;
