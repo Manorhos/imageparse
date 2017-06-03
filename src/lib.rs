@@ -438,7 +438,7 @@ impl Cuesheet {
     pub fn get_current_track_local_msf(&self) -> Result<MsfIndex, CueParseError> {
         if let Some(ref loc) = self.location {
             let start_of_track = self.bin_files[loc.bin_file_no]
-                                     .tracks[loc.track_no]
+                                     .tracks[loc.track_in_bin]
                                      .get_first_msf();
             let bin_local_msf = MsfIndex::from_sectors(loc.local_sector)?;
             let mut result = (bin_local_msf - start_of_track)?;
@@ -466,7 +466,7 @@ impl Cuesheet {
 
     pub fn get_current_track_type(&self) -> Option<TrackType> {
         if let Some(loc) = self.location {
-            Some(self.bin_files[loc.bin_file_no].tracks[loc.track_no].track_type)
+            Some(self.bin_files[loc.bin_file_no].tracks[loc.track_in_bin].track_type)
         } else {
             None
         }
@@ -508,6 +508,7 @@ impl Cuesheet {
         debug!("Sector Number: {}", sector_no);
 
         let mut bin_pos_on_disc = 0;
+        let mut track_no = 0;
         // Find correct bin file
         for (bin_i, bin) in self.bin_files.iter().enumerate() {
             if (bin_pos_on_disc + bin.get_num_sectors()) > sector_no {
@@ -518,7 +519,8 @@ impl Cuesheet {
                         let real_msf_in_sectors = real_msf.to_sectors();
                         self.location = Some(Location {
                             bin_file_no: bin_i,
-                            track_no: track_i,
+                            track_no: track_no + track_i as u8,
+                            track_in_bin: track_i,
                             global_msf: real_msf,
                             local_sector: (real_msf_in_sectors - bin_pos_on_disc),
                             sectors_left: track.num_sectors - (real_msf_in_sectors - track_pos_on_disc)
@@ -530,6 +532,7 @@ impl Cuesheet {
                 }
             } else {
                 bin_pos_on_disc += bin.get_num_sectors();
+                track_no += bin.tracks.len() as u8;
             }
         }
         debug!("set_location: didn't find location");
@@ -553,7 +556,8 @@ impl Cuesheet {
                 let pos_on_disc = bin_pos_on_disc + track_index_one;
                 self.location = Some(Location {
                     bin_file_no: bin_i,
-                    track_no: track_in_bin,
+                    track_no: track - 1,
+                    track_in_bin: track_in_bin,
                     global_msf: MsfIndex::from_sectors(pos_on_disc)?,
                     local_sector: track_index_one,
                     sectors_left: bin.tracks[track_in_bin].num_sectors -
@@ -605,7 +609,8 @@ impl Cuesheet {
 #[derive(Clone, Copy, Debug)]
 struct Location {
     bin_file_no: usize,
-    track_no: usize,
+    track_no: u8,
+    track_in_bin: usize,
     global_msf: MsfIndex,
 
     // Sector number local to the current bin file
