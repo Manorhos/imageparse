@@ -503,7 +503,7 @@ impl Cuesheet {
     // TODO: Change error type
     pub fn set_location(&mut self, msf: &MsfIndex) -> Result<(), CueParseError> {
         // HACK! I think we need to subtract the real amount of pregaps here
-        let real_msf = (*msf - MsfIndex::new(0,2,0).unwrap()).unwrap();
+        let real_msf = (*msf - MsfIndex::new(0,2,0).unwrap())?;
         let sector_no = real_msf.to_sectors();
         debug!("Sector Number: {}", sector_no);
 
