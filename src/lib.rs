@@ -435,6 +435,23 @@ impl Cuesheet {
         }
     }
 
+    // TODO: Currently only returns 0 or 1
+    pub fn get_current_index(&self) -> Result<u8, CueParseError> {
+        if let Some(ref loc) = self.location {
+            let index_one_msf = self.bin_files[loc.bin_file_no]
+                                    .tracks[loc.track_in_bin]
+                                    .indices.first().unwrap();
+            let current_msf = self.get_current_track_local_msf()?;
+            if *index_one_msf < current_msf {
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        } else {
+            Err(CueParseError::NoLocationSet)
+        }
+    }
+
     pub fn get_current_track_local_msf(&self) -> Result<MsfIndex, CueParseError> {
         if let Some(ref loc) = self.location {
             let start_of_track = self.bin_files[loc.bin_file_no]
@@ -582,7 +599,7 @@ impl Cuesheet {
         let current_bin_file;
         let current_sector;
         {
-            let mut loc = self.location.as_mut().unwrap();
+            let loc = self.location.as_mut().unwrap();
             current_bin_file = loc.bin_file_no;
             current_sector = loc.local_sector;
             loc.local_sector += 1;
