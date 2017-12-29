@@ -2,7 +2,7 @@ extern crate memmap;
 #[macro_use]
 extern crate log;
 
-mod msf_index;
+mod index;
 
 use std::fmt;
 use std::path::Path;
@@ -11,13 +11,12 @@ use std::str;
 
 use memmap::{Mmap, Protection};
 
-pub use self::msf_index::{MsfIndex, MsfParseError, MsfOverflow};
+pub use self::index::{GlobalSectorNumber, LocalSectorNumber, MsfIndex, MsfParseError};
 
 
 #[derive(Debug)]
 pub enum CueParseError {
     MsfParseError(MsfParseError),
-    MsfOverflow(MsfOverflow),
     ParseIntError(std::num::ParseIntError),
     IoError(std::io::Error),
     InvalidCommandError(String),
@@ -33,7 +32,7 @@ pub enum CueParseError {
     NoBinFiles,
     FileNameParseError,
     TrackCommandWithoutBinFile,
-    PregapCommandWithoutTrack,
+    PregapNotSupported,
     IndexCommandWithoutTrack,
     Utf8Error(str::Utf8Error),
     OutOfRange,
@@ -66,6 +65,7 @@ impl fmt::Display for CueParseError {
             UnknownTrackType(ref s) => write!(f, "Unknown Track Type: {}", s),
             UnknownBinMode(ref s) => write!(f, "Unknown Binary File Mode: {}", s),
             NoBinFiles => write!(f, "No image files referenced in the cue sheet"),
+            PregapNotSupported => write!(f, "PREGAP command not supported yet"),
             _ => write!(f, "{}", self.description())
         }
     }
@@ -92,12 +92,6 @@ impl From<str::Utf8Error> for CueParseError {
 impl From<MsfParseError> for CueParseError {
     fn from(err: MsfParseError) -> CueParseError {
         CueParseError::MsfParseError(err)
-    }
-}
-
-impl From<MsfOverflow> for CueParseError {
-    fn from(err: MsfOverflow) -> CueParseError {
-        CueParseError::MsfOverflow(err)
     }
 }
 
@@ -150,27 +144,28 @@ impl TrackType {
 
 #[derive(Copy, Clone)]
 enum Pregap {
-    Index00(MsfIndex),
-    #[allow(unused)]
-    Silence(MsfIndex)
+    // The sector number is a direct translation from the MSF timestamp given in the cue file,
+    // so it is local to the corresponding bin file.
+    Index00(LocalSectorNumber),
 }
 
 #[derive(Clone)]
 struct Track {
     track_type: TrackType,
     pregap: Option<Pregap>,
-    indices: Vec<MsfIndex>,
+
+    // These are direct translations from the MSF timestamp given in the cue file,
+    // so they are local to the corresponding bin file.
+    indices: Vec<LocalSectorNumber>,
     num_sectors: usize
 }
 
 impl Track {
-    fn get_first_msf(&self) -> MsfIndex {
-        if let Some(pregap) = self.pregap {
-            if let Pregap::Index00(msf) = pregap {
-                return msf;
-            }
+    fn get_physical_track_start(&self) -> LocalSectorNumber {
+        if let Some(Pregap::Index00(sector_no)) = self.pregap {
+            return sector_no;
         }
-        return self.indices.first().unwrap().clone();
+        return *self.indices.first().unwrap();
     }
 }
 
@@ -194,18 +189,18 @@ impl BinFile {
             if current_track.indices.is_empty() || next_track.indices.is_empty() {
                 return Err(CueParseError::TrackWithoutIndex01);
             }
-            let length = (next_track.get_first_msf() - current_track.get_first_msf())?;
+            let length = next_track.get_physical_track_start() - current_track.get_physical_track_start();
             let track = Track {
                 track_type: current_track.track_type.clone(),
                 pregap: current_track.pregap.clone(),
                 indices: current_track.indices.clone(),
-                num_sectors: length.to_sectors()
+                num_sectors: length.0
             };
             self.tracks.push(track);
         }
         let last_track_metadata = tracks.last().unwrap();
         let last_track_sectors = self.get_num_sectors()
-                                 - last_track_metadata.get_first_msf().to_sectors();
+                                 - last_track_metadata.get_physical_track_start().0;
         let last_track = Track {
             track_type: last_track_metadata.track_type.clone(),
             pregap: last_track_metadata.pregap.clone(),
@@ -292,15 +287,16 @@ fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueParseError> {
 struct TempTrackMetadata {
     track_type: TrackType,
     pregap: Option<Pregap>,
-    indices: Vec<MsfIndex>
+
+    // These are direct translations from the MSF timestamp given in the cue file,
+    // so they are local to the corresponding bin file.
+    indices: Vec<LocalSectorNumber>
 }
 
 impl TempTrackMetadata {
-    fn get_first_msf(&self) -> MsfIndex {
-        if let Some(pregap) = self.pregap {
-            if let Pregap::Index00(msf) = pregap {
-                return msf;
-            }
+    fn get_physical_track_start(&self) -> LocalSectorNumber {
+        if let Some(Pregap::Index00(sector_no)) = self.pregap {
+            return sector_no;
         }
         return self.indices.first().unwrap().clone();
     }
@@ -360,19 +356,7 @@ impl Cuesheet {
                         }
                     }
                     "PERFORMER" | "TITLE" => {} // TODO
-                    "PREGAP" => {
-                        if let Some(ref mut track) = current_track {
-                            if track.pregap.is_some() {
-                                // FIXME: Maybe use a more descriptive error message?
-                                return Err(CueParseError::InvalidIndexNumber);
-                            }
-                            // TODO: Parse the pregap line and remember the length of it,
-                            // since it is not in the bin file and it must be considered
-                            // for calculating the offset into the bin files from now on
-                        } else {
-                            return Err(CueParseError::PregapCommandWithoutTrack);
-                        }
-                    }
+                    "PREGAP" => return Err(CueParseError::PregapNotSupported),
                     "INDEX" => {
                         if let Some(ref mut track) = current_track {
                             let (index_number, index) = parse_index_line(line)?;
@@ -383,11 +367,11 @@ impl Cuesheet {
                                     // FIXME: Maybe use a more descriptive error message?
                                     return Err(CueParseError::InvalidIndexNumber);
                                 }
-                                track.pregap = Some(Pregap::Index00(index));
+                                track.pregap = Some(Pregap::Index00(LocalSectorNumber(index.to_sector_number())));
                             } else if index_number as usize != track.indices.len() + 1 {
                                 return Err(CueParseError::InvalidIndexNumber);
                             } else {
-                                track.indices.push(index);
+                                track.indices.push(LocalSectorNumber(index.to_sector_number()));
                             }
                         } else {
                             return Err(CueParseError::IndexCommandWithoutTrack);
@@ -438,11 +422,10 @@ impl Cuesheet {
     // TODO: Currently only returns 0 or 1
     pub fn get_current_index(&self) -> Result<u8, CueParseError> {
         if let Some(ref loc) = self.location {
-            let index_one_msf = self.bin_files[loc.bin_file_no]
+            let index_one = self.bin_files[loc.bin_file_no]
                                     .tracks[loc.track_in_bin]
                                     .indices.first().unwrap();
-            let current_msf = self.get_current_track_local_msf()?;
-            if *index_one_msf < current_msf {
+            if *index_one < loc.local_sector {
                 Ok(1)
             } else {
                 Ok(0)
@@ -456,14 +439,13 @@ impl Cuesheet {
         if let Some(ref loc) = self.location {
             let start_of_track = self.bin_files[loc.bin_file_no]
                                      .tracks[loc.track_in_bin]
-                                     .get_first_msf();
-            let bin_local_msf = MsfIndex::from_sectors(loc.local_sector)?;
-            let mut result = (bin_local_msf - start_of_track)?;
+                                     .get_physical_track_start();
+            let mut track_local = loc.local_sector - start_of_track;
             // HACK...
             if loc.bin_file_no == 0 && loc.track_no == 0 {
-                result = (result + MsfIndex::new(0,2,0)?)?;
+                track_local = track_local + 150;
             }
-            Ok(result)
+            Ok(track_local.to_msf_index()?)
         } else {
             Err(CueParseError::NoLocationSet)
         }
@@ -472,9 +454,8 @@ impl Cuesheet {
     pub fn get_current_global_msf(&self) -> Result<MsfIndex, CueParseError> {
         if let Some(ref loc) = self.location {
             // HACK! I think we need to add the real amount of pregaps here
-            debug!("{:?}", loc.global_msf);
-            let global_msf = (loc.global_msf.clone() + MsfIndex::new(0,2,0).unwrap())?;
-            debug!("before: {:?}, after: {:?}", loc.global_msf, global_msf);
+            let global_msf = (loc.global_position + 150).to_msf_index()?;
+            debug!("before: {:?}, after: {:?}", loc.global_position, global_msf);
             Ok(global_msf)
         } else {
             Err(CueParseError::NoLocationSet)
@@ -489,29 +470,27 @@ impl Cuesheet {
         }
     }
 
-    pub fn get_physical_track_start(&self, track: u8) -> Result<MsfIndex, CueParseError> {
+    pub fn get_track_start(&self, track: u8) -> Result<MsfIndex, CueParseError> {
         if track == 0 {
             let len = std::iter::Sum::sum(self.bin_files.iter().map(|x| x.get_num_sectors()));
-            return Ok(MsfIndex::from_sectors(len)?);
+            return Ok(GlobalSectorNumber(len).to_msf_index()?);
         }
-        let mut bin_pos_on_disc = 0;
+        let mut bin_pos_on_disc = GlobalSectorNumber(0);
         let mut tracks_skipped = 0;
         // Find correct bin file
         for bin in self.bin_files.iter() {
             if bin.tracks.len() >= (track - tracks_skipped) as usize {
                 let track_in_bin = track as usize - tracks_skipped as usize - 1;
 
-                let track_index_one = bin.tracks[track_in_bin].indices.first().unwrap().to_sectors();
-
-                let pos_on_disc = bin_pos_on_disc + track_index_one;
+                let track_index_one = bin.tracks[track_in_bin].indices.first().unwrap();
 
                 // HACK! I think we need to add the real amount of pregaps here
-                let physical_msf = (MsfIndex::from_sectors(pos_on_disc)? +
-                                    MsfIndex::new(0,2,0)?)?;
-                return Ok(physical_msf);
+                let pos_on_disc = bin_pos_on_disc + *track_index_one + 150;
+
+                return Ok(pos_on_disc.to_msf_index()?);
             } else {
                 tracks_skipped += bin.tracks.len() as u8;
-                bin_pos_on_disc += bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
             }
         }
         Err(CueParseError::OutOfRange)
@@ -520,11 +499,9 @@ impl Cuesheet {
     // TODO: Change error type
     pub fn set_location(&mut self, msf: &MsfIndex) -> Result<(), CueParseError> {
         // HACK! I think we need to subtract the real amount of pregaps here
-        let real_msf = (*msf - MsfIndex::new(0,2,0).unwrap())?;
-        let sector_no = real_msf.to_sectors();
-        debug!("Sector Number: {}", sector_no);
+        let sector_no = GlobalSectorNumber(msf.to_sector_number() - 150);
 
-        let mut bin_pos_on_disc = 0;
+        let mut bin_pos_on_disc = GlobalSectorNumber(0);
         let mut track_no = 0;
         // Find correct bin file
         for (bin_i, bin) in self.bin_files.iter().enumerate() {
@@ -533,22 +510,21 @@ impl Cuesheet {
                 let mut track_pos_on_disc = bin_pos_on_disc;
                 for (track_i, track) in bin.tracks.iter().enumerate() {
                     if (track_pos_on_disc + track.num_sectors) > sector_no {
-                        let real_msf_in_sectors = real_msf.to_sectors();
                         self.location = Some(Location {
                             bin_file_no: bin_i,
                             track_no: track_no + track_i as u8,
                             track_in_bin: track_i,
-                            global_msf: real_msf,
-                            local_sector: (real_msf_in_sectors - bin_pos_on_disc),
-                            sectors_left: track.num_sectors - (real_msf_in_sectors - track_pos_on_disc)
+                            global_position: sector_no,
+                            local_sector: LocalSectorNumber((sector_no - bin_pos_on_disc).0),
+                            sectors_left: track.num_sectors - (sector_no.0 - track_pos_on_disc.0)
                         });
                         return Ok(());
                     } else {
-                        track_pos_on_disc += track.num_sectors;
+                        track_pos_on_disc = track_pos_on_disc + track.num_sectors;
                     }
                 }
             } else {
-                bin_pos_on_disc += bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
                 track_no += bin.tracks.len() as u8;
             }
         }
@@ -560,30 +536,30 @@ impl Cuesheet {
         if track == 0 {
             return Err(CueParseError::OutOfRange);
         }
-        let mut bin_pos_on_disc = 0;
+        let mut bin_pos_on_disc = GlobalSectorNumber(0);
         let mut tracks_skipped = 0;
         // Find correct bin file
         for (bin_i, bin) in self.bin_files.iter().enumerate() {
             if bin.tracks.len() >= (track - tracks_skipped) as usize {
                 let track_in_bin = track as usize - tracks_skipped as usize - 1;
 
-                let track_start = bin.tracks[track_in_bin].get_first_msf().to_sectors();
-                let track_index_one = bin.tracks[track_in_bin].indices.first().unwrap().to_sectors();
+                let track_start = bin.tracks[track_in_bin].get_physical_track_start();
+                let track_index_one = bin.tracks[track_in_bin].indices.first().unwrap();
 
-                let pos_on_disc = bin_pos_on_disc + track_index_one;
+                let pos_on_disc = bin_pos_on_disc + *track_index_one;
                 self.location = Some(Location {
                     bin_file_no: bin_i,
                     track_no: track - 1,
                     track_in_bin: track_in_bin,
-                    global_msf: MsfIndex::from_sectors(pos_on_disc)?,
-                    local_sector: track_index_one,
+                    global_position: pos_on_disc,
+                    local_sector: *track_index_one,
                     sectors_left: bin.tracks[track_in_bin].num_sectors -
-                                  (track_index_one - track_start)
+                                  (*track_index_one - track_start).0
                 });
                 return Ok(());
             } else {
                 tracks_skipped += bin.tracks.len() as u8;
-                bin_pos_on_disc += bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
             }
         }
         Err(CueParseError::OutOfRange)
@@ -602,20 +578,20 @@ impl Cuesheet {
             let loc = self.location.as_mut().unwrap();
             current_bin_file = loc.bin_file_no;
             current_sector = loc.local_sector;
-            loc.local_sector += 1;
+            loc.local_sector = loc.local_sector + 1;
             assert!(loc.sectors_left > 0);
             loc.sectors_left -= 1;
-            loc.global_msf = loc.global_msf.next()?;
+            loc.global_position = loc.global_position + 1;
         }
         let new_loc = self.location.as_ref().unwrap().clone();
         if new_loc.sectors_left == 0 {
             // HACK! I think we need to add the real amount of pregaps here
-            let new_physical_msf = (new_loc.global_msf + MsfIndex::new(0,2,0)?)?;
-            self.set_location(&new_physical_msf)?;
+            let new_physical_position = new_loc.global_position + 150;
+            self.set_location(&new_physical_position.to_msf_index()?)?;
             event = Some(Event::TrackChange);
         }
 
-        let offset = current_sector * 2352;
+        let offset = current_sector.to_byte_offset();
         unsafe {
             Ok((&self.bin_files[current_bin_file].file.as_slice()[offset..offset + 2352],
                event))
@@ -628,10 +604,10 @@ struct Location {
     bin_file_no: usize,
     track_no: u8,
     track_in_bin: usize,
-    global_msf: MsfIndex,
+    global_position: GlobalSectorNumber,
 
     // Sector number local to the current bin file
-    local_sector: usize,
+    local_sector: LocalSectorNumber,
 
     // Number of sectors left until the track changes
     sectors_left: usize
