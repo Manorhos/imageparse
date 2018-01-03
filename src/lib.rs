@@ -1,4 +1,4 @@
-extern crate memmap;
+extern crate filebuffer;
 #[macro_use]
 extern crate log;
 
@@ -9,9 +9,12 @@ use std::path::Path;
 use std::error::Error;
 use std::str;
 
-use memmap::{Mmap, Protection};
+use filebuffer::{FileBuffer};
 
 pub use self::index::{GlobalSectorNumber, LocalSectorNumber, MsfIndex, MsfParseError};
+
+
+const READAHEAD_SECTORS: usize = 60 * 75;
 
 
 #[derive(Debug)]
@@ -170,7 +173,7 @@ impl Track {
 }
 
 struct BinFile {
-    file: Mmap,
+    file: FileBuffer,
     bin_mode: BinMode,
     tracks: Vec<Track>
 }
@@ -232,9 +235,9 @@ fn parse_file_line(line: &str, cue_dir: Option<&Path>) -> Result<BinFile, CuePar
     let bin_mode_str = line.rsplit(|c: char| c.is_whitespace()).next().unwrap();
 
     let file = if let Some(cue_dir) = cue_dir {
-        Mmap::open_path(cue_dir.join(bin_filename), Protection::Read)?
+        FileBuffer::open(cue_dir.join(bin_filename))?
     } else {
-        Mmap::open_path(bin_filename, Protection::Read)?
+        FileBuffer::open(bin_filename)?
     };
     if file.len() % 2352 != 0 {
         warn!("Size of file \"{}\" is not a multiple of 2352 bytes.", bin_filename);
@@ -311,9 +314,8 @@ impl Cuesheet {
     pub fn open_cue<P>(path: P) -> Result<Cuesheet, CueParseError>
         where P: AsRef<Path>
     {
-        let cue_file = Mmap::open_path(path.as_ref().clone(), Protection::Read)?;
-        let cue_bytes = unsafe { cue_file.as_slice() } ;
-        let cue_str = str::from_utf8(cue_bytes)?;
+        let cue_file = FileBuffer::open(path.as_ref().clone())?;
+        let cue_str = str::from_utf8(&cue_file)?;
 
         let mut bin_files: Vec<BinFile> = Vec::new();
         let mut current_track_number = 0;
@@ -518,6 +520,10 @@ impl Cuesheet {
                             local_sector: LocalSectorNumber((sector_no - bin_pos_on_disc).0),
                             sectors_left: track.num_sectors - (sector_no.0 - track_pos_on_disc.0)
                         });
+                        let offset = self.location.unwrap().local_sector.to_byte_offset();
+                        let buffer = &self.bin_files[bin_i].file;
+                        let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
+                        buffer.prefetch(offset, prefetch * 2352);
                         return Ok(());
                     } else {
                         track_pos_on_disc = track_pos_on_disc + track.num_sectors;
@@ -556,6 +562,10 @@ impl Cuesheet {
                     sectors_left: bin.tracks[track_in_bin].num_sectors -
                                   (*track_index_one - track_start).0
                 });
+                let offset = self.location.unwrap().local_sector.to_byte_offset();
+                let buffer = &self.bin_files[bin_i].file;
+                let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
+                buffer.prefetch(offset, prefetch * 2352);
                 return Ok(());
             } else {
                 tracks_skipped += bin.tracks.len() as u8;
@@ -584,18 +594,20 @@ impl Cuesheet {
             loc.global_position = loc.global_position + 1;
         }
         let new_loc = self.location.as_ref().unwrap().clone();
+        let offset = current_sector.to_byte_offset();
         if new_loc.sectors_left == 0 {
             // HACK! I think we need to add the real amount of pregaps here
             let new_physical_position = new_loc.global_position + 150;
             self.set_location(&new_physical_position.to_msf_index()?)?;
             event = Some(Event::TrackChange);
+        } else {
+            let buffer = &self.bin_files[current_bin_file].file;
+            let prefetch = std::cmp::min(new_loc.sectors_left, READAHEAD_SECTORS);
+            buffer.prefetch(offset + 2352, prefetch * 2352);
         }
 
-        let offset = current_sector.to_byte_offset();
-        unsafe {
-            Ok((&self.bin_files[current_bin_file].file.as_slice()[offset..offset + 2352],
-               event))
-        }
+        let buffer = &self.bin_files[current_bin_file].file;
+        Ok((&buffer[offset..offset + 2352], event))
     }
 }
 
