@@ -473,8 +473,11 @@ impl Cuesheet {
     }
 
     pub fn get_track_start(&self, track: u8) -> Result<MsfIndex, CueParseError> {
+        // Track 0: Special case for PlayStation, return length of whole disc
+        // TODO: Make this less ugly?
         if track == 0 {
-            let len = std::iter::Sum::sum(self.bin_files.iter().map(|x| x.get_num_sectors()));
+            // 150: Pregap of first track, not included in image
+            let len = 150 + self.bin_files.iter().map(|x| x.get_num_sectors()).sum::<usize>();
             return Ok(GlobalSectorNumber(len).to_msf_index()?);
         }
         let mut bin_pos_on_disc = GlobalSectorNumber(0);
