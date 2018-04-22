@@ -472,6 +472,10 @@ impl Cuesheet {
         }
     }
 
+    pub fn get_first_track_type(&self) -> TrackType {
+        self.bin_files.first().unwrap().tracks.first().unwrap().track_type
+    }
+
     pub fn get_track_start(&self, track: u8) -> Result<MsfIndex, CueParseError> {
         // Track 0: Special case for PlayStation, return length of whole disc
         // TODO: Make this less ugly?
