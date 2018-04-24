@@ -508,7 +508,23 @@ impl Cuesheet {
     // TODO: Change error type
     pub fn set_location(&mut self, msf: &MsfIndex) -> Result<(), CueParseError> {
         // HACK! I think we need to subtract the real amount of pregaps here
-        let sector_no = GlobalSectorNumber(msf.to_sector_number() - 150);
+        let sector_no = msf.to_sector_number();
+
+        // Pregap of first track
+        if sector_no < 150 {
+            self.location = Some(Location {
+                bin_file_no: 0,
+                track_no: 0,
+                track_in_bin: 0,
+                global_position: GlobalSectorNumber(0),
+                local_sector: LocalSectorNumber(0),
+                first_track_pregap_sectors_left: Some(150 - sector_no),
+                sectors_left: 0,
+            });
+            return Ok(());
+        }
+
+        let sector_no = GlobalSectorNumber(sector_no - 150);
 
         let mut bin_pos_on_disc = GlobalSectorNumber(0);
         let mut track_no = 0;
@@ -525,6 +541,7 @@ impl Cuesheet {
                             track_in_bin: track_i,
                             global_position: sector_no,
                             local_sector: LocalSectorNumber((sector_no - bin_pos_on_disc).0),
+                            first_track_pregap_sectors_left: None,
                             sectors_left: track.num_sectors - (sector_no.0 - track_pos_on_disc.0)
                         });
                         let offset = self.location.unwrap().local_sector.to_byte_offset();
@@ -566,6 +583,7 @@ impl Cuesheet {
                     track_in_bin: track_in_bin,
                     global_position: pos_on_disc,
                     local_sector: *track_index_one,
+                    first_track_pregap_sectors_left: None,
                     sectors_left: bin.tracks[track_in_bin].num_sectors -
                                   (*track_index_one - track_start).0
                 });
@@ -583,6 +601,25 @@ impl Cuesheet {
     }
 
     pub fn get_next_sector(&mut self) -> Result<(&[u8], Option<Event>), CueParseError> {
+        if let Some(ref mut loc) = self.location {
+            if let Some(pregap_sectors) = loc.first_track_pregap_sectors_left {
+                let new_pregap_sectors = pregap_sectors - 1;
+                if new_pregap_sectors == 0 {
+                    *loc = Location {
+                        bin_file_no: 0,
+                        track_no: 0,
+                        track_in_bin: 0,
+                        global_position: GlobalSectorNumber(0),
+                        local_sector: LocalSectorNumber(0),
+                        first_track_pregap_sectors_left: None,
+                        sectors_left: self.bin_files[0].get_num_sectors(),
+                    };
+                } else {
+                    loc.first_track_pregap_sectors_left = Some(new_pregap_sectors);
+                }
+                return Ok((&[0u8; 2352], None));
+            }
+        }
         if self.location.is_none() {
             return Err(CueParseError::NoLocationSet);
         }
@@ -623,10 +660,16 @@ struct Location {
     bin_file_no: usize,
     track_no: u8,
     track_in_bin: usize,
+
     global_position: GlobalSectorNumber,
 
     // Sector number local to the current bin file
     local_sector: LocalSectorNumber,
+
+    // Number of sectors until the pregap of the first track ends.
+    // Only is Some(_) if we are currently in the pregap of the first track.
+    // Caution: `global_position`, `local_sector` and `sectors_left` are not valid during that time.
+    first_track_pregap_sectors_left: Option<usize>,
 
     // Number of sectors left until the track changes
     sectors_left: usize
