@@ -4,9 +4,14 @@ version = "0.0.1"
 authors = ["Niels Wießner <n.h.wiessner@gmail.com>"]
 license = "MIT/Apache-2.0"
 
+[features]
+serde-support = ["serde", "serde_derive"]
+
 [dependencies]
 filebuffer = "0.3.0"
 log = "0.3.6"
+serde = { version = "1.0.8", optional = true }
+serde_derive = { version = "1.0.8", optional = true }
 
 [dev-dependencies]
 env_logger = "0.3.5"

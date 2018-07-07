@@ -148,6 +148,7 @@ impl From<std::num::ParseIntError> for MsfParseError {
 
 // MsfIndex(minutes, seconds, frame), not BCD encoded
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde-support", derive(Serialize, Deserialize))]
 pub struct MsfIndex(u8, u8, u8);
 
 impl MsfIndex {

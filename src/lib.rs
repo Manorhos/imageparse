@@ -2,6 +2,12 @@ extern crate filebuffer;
 #[macro_use]
 extern crate log;
 
+#[cfg(feature = "serde-support")]
+#[macro_use]
+extern crate serde_derive;
+#[cfg(feature = "serde-support")]
+extern crate serde;
+
 mod index;
 
 use std::fmt;
