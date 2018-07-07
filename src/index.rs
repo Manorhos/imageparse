@@ -229,7 +229,7 @@ impl PartialOrd for MsfIndex {
 
 #[cfg(test)]
 mod tests {
-    use msf_index::*;
+    use index::*;
 
     #[test]
     fn msf_index_range() {
