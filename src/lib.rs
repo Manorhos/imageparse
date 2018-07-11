@@ -448,12 +448,18 @@ impl Cuesheet {
             let start_of_track = self.bin_files[loc.bin_file_no]
                                      .tracks[loc.track_in_bin]
                                      .get_physical_track_start();
-            let mut track_local = loc.local_sector - start_of_track;
-            // HACK...
-            if loc.bin_file_no == 0 && loc.track_no == 0 {
-                track_local = track_local + 150;
+            let index_one = *self.bin_files[loc.bin_file_no]
+                                .tracks[loc.track_in_bin]
+                                .indices.first().unwrap() - start_of_track;
+            let track_local = loc.local_sector - start_of_track;
+            if track_local < index_one {
+                // Negative MSFs are (100,0,0) - x
+                let reference = LocalSectorNumber(100 * 60 * 75);
+                let offset = index_one - track_local;
+                Ok((reference - offset).to_msf_index()?)
+            } else {
+                Ok((track_local - index_one).to_msf_index()?)
             }
-            Ok(track_local.to_msf_index()?)
         } else {
             Err(CueParseError::NoLocationSet)
         }

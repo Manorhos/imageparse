@@ -9,14 +9,7 @@ pub struct GlobalSectorNumber(pub usize);
 
 impl GlobalSectorNumber {
     pub fn to_msf_index(self) -> Result<MsfIndex, MsfParseError> {
-        let mut temp_sectors = self.0;
-        let m = temp_sectors / (60 * 75);
-        temp_sectors -= m * 60 * 75;
-        let s = temp_sectors / 75;
-        temp_sectors -= s * 75;
-        let f = temp_sectors;
-        debug!("MsfIndex::from_sectors({}) -> ({},{},{})", self.0, m, s, f);
-        MsfIndex::new(m as u8, s as u8, f as u8)
+        MsfIndex::from_sector_number(self.0)
     }
 }
 
@@ -69,14 +62,7 @@ impl LocalSectorNumber {
     }
 
     pub fn to_msf_index(self) -> Result<MsfIndex, MsfParseError> {
-        let mut temp_sectors = self.0;
-        let m = temp_sectors / (60 * 75);
-        temp_sectors -= m * 60 * 75;
-        let s = temp_sectors / 75;
-        temp_sectors -= s * 75;
-        let f = temp_sectors;
-        debug!("MsfIndex::from_sectors({}) -> ({},{},{})", self.0, m, s, f);
-        MsfIndex::new(m as u8, s as u8, f as u8)
+        MsfIndex::from_sector_number(self.0)
     }
 }
 
@@ -189,6 +175,17 @@ impl MsfIndex {
         } else {
             Err(MsfParseError::InvalidMsfError)
         }
+    }
+
+    pub fn from_sector_number(sector_no: usize) -> Result<MsfIndex, MsfParseError> {
+        let mut temp_sectors = sector_no;
+        let m = temp_sectors / (60 * 75);
+        temp_sectors -= m * 60 * 75;
+        let s = temp_sectors / 75;
+        temp_sectors -= s * 75;
+        let f = temp_sectors;
+        debug!("{} -> ({},{},{})", sector_no, m, s, f);
+        MsfIndex::new(m as u8, s as u8, f as u8)
     }
 
     pub fn to_sector_number(&self) -> usize {
