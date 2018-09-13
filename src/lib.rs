@@ -433,7 +433,7 @@ impl Cuesheet {
             let index_one = self.bin_files[loc.bin_file_no]
                                     .tracks[loc.track_in_bin]
                                     .indices.first().unwrap();
-            if *index_one < loc.local_sector {
+            if loc.local_sector >= *index_one {
                 Ok(1)
             } else {
                 Ok(0)
