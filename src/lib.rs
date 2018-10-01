@@ -656,10 +656,6 @@ impl Cuesheet {
             let new_physical_position = new_loc.global_position + 150;
             self.set_location(&new_physical_position.to_msf_index()?)?;
             event = Some(Event::TrackChange);
-        } else {
-            let buffer = &self.bin_files[current_bin_file].file;
-            let prefetch = std::cmp::min(new_loc.sectors_left, READAHEAD_SECTORS);
-            buffer.prefetch(offset + 2352, prefetch * 2352);
         }
 
         let buffer = &self.bin_files[current_bin_file].file;
