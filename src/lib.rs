@@ -363,8 +363,7 @@ impl Cuesheet {
                             return Err(CueParseError::TrackCommandWithoutBinFile);
                         }
                     }
-                    "PERFORMER" | "TITLE" => {} // TODO
-                    "PREGAP" => return Err(CueParseError::PregapNotSupported),
+                    "PREGAP" => error!("Ignoring PREGAP command (not yet implemented)"),
                     "INDEX" => {
                         if let Some(ref mut track) = current_track {
                             let (index_number, index) = parse_index_line(line)?;
@@ -385,6 +384,7 @@ impl Cuesheet {
                             return Err(CueParseError::IndexCommandWithoutTrack);
                         }
                     }
+                    "FLAGS" | "CDTEXTFILE" | "CATALOG" | "PERFORMER" | "TITLE" | "ISRC" => {} // TODO
                     "REM" => {
                         // TODO: Get ReplayGain information if present
                     }
