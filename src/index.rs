@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::{Add, Sub};
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct GlobalSectorNumber(pub usize);
+pub struct GlobalSectorNumber(pub u64);
 
 impl GlobalSectorNumber {
     pub fn to_msf_index(self) -> Result<MsfIndex, MsfParseError> {
@@ -37,27 +37,27 @@ impl Add<LocalSectorNumber> for GlobalSectorNumber {
     }
 }
 
-impl Add<usize> for GlobalSectorNumber {
+impl Add<u64> for GlobalSectorNumber {
     type Output = GlobalSectorNumber;
     #[inline]
-    fn add(self, rhs: usize) -> GlobalSectorNumber {
+    fn add(self, rhs: u64) -> GlobalSectorNumber {
         GlobalSectorNumber(self.0 + rhs)
     }
 }
 
-impl Sub<usize> for GlobalSectorNumber {
+impl Sub<u64> for GlobalSectorNumber {
     type Output = GlobalSectorNumber;
     #[inline]
-    fn sub(self, rhs: usize) -> GlobalSectorNumber {
+    fn sub(self, rhs: u64) -> GlobalSectorNumber {
         GlobalSectorNumber(self.0 - rhs)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct LocalSectorNumber(pub usize);
+pub struct LocalSectorNumber(pub u64);
 
 impl LocalSectorNumber {
-    pub fn to_byte_offset(self) -> usize {
+    pub fn to_byte_offset(self) -> u64 {
         self.0 * 2352
     }
 
@@ -82,18 +82,18 @@ impl Sub for LocalSectorNumber {
     }
 }
 
-impl Add<usize> for LocalSectorNumber {
+impl Add<u64> for LocalSectorNumber {
     type Output = LocalSectorNumber;
     #[inline]
-    fn add(self, rhs: usize) -> LocalSectorNumber {
+    fn add(self, rhs: u64) -> LocalSectorNumber {
         LocalSectorNumber(self.0 + rhs)
     }
 }
 
-impl Sub<usize> for LocalSectorNumber {
+impl Sub<u64> for LocalSectorNumber {
     type Output = LocalSectorNumber;
     #[inline]
-    fn sub(self, rhs: usize) -> LocalSectorNumber {
+    fn sub(self, rhs: u64) -> LocalSectorNumber {
         LocalSectorNumber(self.0 - rhs)
     }
 }
@@ -177,7 +177,7 @@ impl MsfIndex {
         }
     }
 
-    pub fn from_sector_number(sector_no: usize) -> Result<MsfIndex, MsfParseError> {
+    pub fn from_sector_number(sector_no: u64) -> Result<MsfIndex, MsfParseError> {
         let mut temp_sectors = sector_no;
         let m = temp_sectors / (60 * 75);
         temp_sectors -= m * 60 * 75;
@@ -188,9 +188,9 @@ impl MsfIndex {
         MsfIndex::new(m as u8, s as u8, f as u8)
     }
 
-    pub fn to_sector_number(&self) -> usize {
+    pub fn to_sector_number(&self) -> u64 {
         let MsfIndex(m,s,f) = *self;
-        m as usize * 60 * 75 + s as usize * 75 + f as usize
+        m as u64 * 60 * 75 + s as u64 * 75 + f as u64
     }
 
     pub fn to_bcd_values(&self) -> (u8, u8, u8) {

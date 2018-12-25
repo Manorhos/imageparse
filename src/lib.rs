@@ -1,6 +1,10 @@
-extern crate filebuffer;
 #[macro_use]
 extern crate log;
+
+#[cfg(feature = "filebuffer")]
+extern crate filebuffer;
+#[cfg(feature = "filebuffer")]
+use filebuffer::FileBuffer;
 
 #[cfg(feature = "serde-support")]
 #[macro_use]
@@ -11,16 +15,23 @@ extern crate serde;
 mod index;
 
 use std::fmt;
+use std::io;
+use std::io::Read;
 use std::path::Path;
 use std::error::Error;
 use std::str;
 
-use filebuffer::{FileBuffer};
+#[cfg(feature = "filebuffer")]
+use std::io::Write;
+use std::fs::File;
+#[cfg(not(feature = "filebuffer"))]
+use std::io::{Seek, SeekFrom};
 
 pub use self::index::{GlobalSectorNumber, LocalSectorNumber, MsfIndex, MsfParseError};
 
 
-const READAHEAD_SECTORS: usize = 60 * 75;
+#[cfg(feature = "filebuffer")]
+const READAHEAD_SECTORS: u64 = 60 * 75;
 
 
 #[derive(Debug)]
@@ -166,7 +177,7 @@ struct Track {
     // These are direct translations from the MSF timestamp given in the cue file,
     // so they are local to the corresponding bin file.
     indices: Vec<LocalSectorNumber>,
-    num_sectors: usize
+    num_sectors: u64
 }
 
 impl Track {
@@ -179,14 +190,23 @@ impl Track {
 }
 
 struct BinFile {
+    #[cfg(feature = "filebuffer")]
     file: FileBuffer,
+    #[cfg(not(feature = "filebuffer"))]
+    file: File,
     bin_mode: BinMode,
     tracks: Vec<Track>
 }
 
 impl BinFile {
-    fn get_num_sectors(&self) -> usize {
-        self.file.len() / 2352
+    #[cfg(feature = "filebuffer")]
+    fn get_num_sectors(&self) -> io::Result<u64> {
+        Ok(self.file.len() as u64 / 2352)
+    }
+
+    #[cfg(not(feature = "filebuffer"))]
+    fn get_num_sectors(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len() / 2352)
     }
 
     // Checks whether the given tracks are valid, calculates their lengths and
@@ -208,7 +228,7 @@ impl BinFile {
             self.tracks.push(track);
         }
         let last_track_metadata = tracks.last().unwrap();
-        let last_track_sectors = self.get_num_sectors()
+        let last_track_sectors = self.get_num_sectors()?
                                  - last_track_metadata.get_physical_track_start().0;
         let last_track = Track {
             track_type: last_track_metadata.track_type.clone(),
@@ -240,12 +260,23 @@ fn parse_file_line(line: &str, cue_dir: Option<&Path>) -> Result<BinFile, CuePar
     let bin_filename = &line[(quote_matches[0].0 + 1)..quote_matches[1].0];
     let bin_mode_str = line.rsplit(|c: char| c.is_whitespace()).next().unwrap();
 
+    #[cfg(feature = "filebuffer")]
     let file = if let Some(cue_dir) = cue_dir {
         FileBuffer::open(cue_dir.join(bin_filename))?
     } else {
         FileBuffer::open(bin_filename)?
     };
-    if file.len() % 2352 != 0 {
+    #[cfg(not(feature = "filebuffer"))]
+    let file = if let Some(cue_dir) = cue_dir {
+        File::open(cue_dir.join(bin_filename))?
+    } else {
+        File::open(bin_filename)?
+    };
+    #[cfg(feature = "filebuffer")]
+    let len = file.len();
+    #[cfg(not(feature = "filebuffer"))]
+    let len = file.metadata()?.len();
+    if len % 2352 != 0 {
         warn!("Size of file \"{}\" is not a multiple of 2352 bytes.", bin_filename);
     }
     Ok(BinFile {
@@ -320,8 +351,9 @@ impl Cuesheet {
     pub fn open_cue<P>(path: P) -> Result<Cuesheet, CueParseError>
         where P: AsRef<Path>
     {
-        let cue_file = FileBuffer::open(path.as_ref().clone())?;
-        let cue_str = str::from_utf8(&cue_file)?;
+        let mut cue_file = File::open(path.as_ref().clone())?;
+        let mut cue_string = String::new();
+        cue_file.read_to_string(&mut cue_string)?;
 
         let mut bin_files: Vec<BinFile> = Vec::new();
         let mut current_track_number = 0;
@@ -329,7 +361,7 @@ impl Cuesheet {
         let mut current_track: Option<TempTrackMetadata> = None;
         let mut tracks_for_current_bin_file: Vec<TempTrackMetadata> = Vec::new();
 
-        for line in cue_str.lines() {
+        for line in cue_string.lines() {
             if let Some(command) = line.split_whitespace().next() {
                 let cmd_uppercase = command.to_uppercase();
                 match cmd_uppercase.as_str() {
@@ -493,7 +525,10 @@ impl Cuesheet {
         // TODO: Make this less ugly?
         if track == 0 {
             // 150: Pregap of first track, not included in image
-            let len = 150 + self.bin_files.iter().map(|x| x.get_num_sectors()).sum::<usize>();
+            let mut len = 150;
+            for bin_file in self.bin_files.iter() {
+                len += bin_file.get_num_sectors()?;
+            }
             return Ok(GlobalSectorNumber(len).to_msf_index()?);
         }
         let mut bin_pos_on_disc = GlobalSectorNumber(0);
@@ -511,7 +546,7 @@ impl Cuesheet {
                 return Ok(pos_on_disc.to_msf_index()?);
             } else {
                 tracks_skipped += bin.tracks.len() as u8;
-                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors()?;
             }
         }
         Err(CueParseError::OutOfRange)
@@ -542,7 +577,7 @@ impl Cuesheet {
         let mut track_no = 0;
         // Find correct bin file
         for (bin_i, bin) in self.bin_files.iter().enumerate() {
-            if (bin_pos_on_disc + bin.get_num_sectors()) > sector_no {
+            if (bin_pos_on_disc + bin.get_num_sectors()?) > sector_no {
                 // Find correct track
                 let mut track_pos_on_disc = bin_pos_on_disc;
                 for (track_i, track) in bin.tracks.iter().enumerate() {
@@ -556,17 +591,20 @@ impl Cuesheet {
                             first_track_pregap_sectors_left: None,
                             sectors_left: track.num_sectors - (sector_no.0 - track_pos_on_disc.0)
                         });
-                        let offset = self.location.unwrap().local_sector.to_byte_offset();
-                        let buffer = &self.bin_files[bin_i].file;
-                        let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
-                        buffer.prefetch(offset, prefetch * 2352);
+                        #[cfg(feature = "filebuffer")]
+                        {
+                            let offset = self.location.unwrap().local_sector.to_byte_offset();
+                            let buffer = &self.bin_files[bin_i].file;
+                            let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
+                            buffer.prefetch(offset as usize, prefetch as usize * 2352);
+                        }
                         return Ok(());
                     } else {
                         track_pos_on_disc = track_pos_on_disc + track.num_sectors;
                     }
                 }
             } else {
-                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors()?;
                 track_no += bin.tracks.len() as u8;
             }
         }
@@ -599,20 +637,24 @@ impl Cuesheet {
                     sectors_left: bin.tracks[track_in_bin].num_sectors -
                                   (*track_index_one - track_start).0
                 });
-                let offset = self.location.unwrap().local_sector.to_byte_offset();
-                let buffer = &self.bin_files[bin_i].file;
-                let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
-                buffer.prefetch(offset, prefetch * 2352);
+                #[cfg(feature = "filebuffer")]
+                {
+                    let offset = self.location.unwrap().local_sector.to_byte_offset();
+                    let buffer = &self.bin_files[bin_i].file;
+                    let prefetch = std::cmp::min(self.location.unwrap().sectors_left, READAHEAD_SECTORS);
+                    buffer.prefetch(offset as usize, prefetch as usize * 2352);
+                }
                 return Ok(());
             } else {
                 tracks_skipped += bin.tracks.len() as u8;
-                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors();
+                bin_pos_on_disc = bin_pos_on_disc + bin.get_num_sectors()?;
             }
         }
         Err(CueParseError::OutOfRange)
     }
 
-    pub fn get_next_sector(&mut self) -> Result<(&[u8], Option<Event>), CueParseError> {
+    // `buffer` must be 2352 bytes long.
+    pub fn get_next_sector(&mut self, buffer: &mut [u8]) -> Result<Option<Event>, CueParseError> {
         if let Some(ref mut loc) = self.location {
             if let Some(pregap_sectors) = loc.first_track_pregap_sectors_left {
                 let new_pregap_sectors = pregap_sectors - 1;
@@ -624,12 +666,15 @@ impl Cuesheet {
                         global_position: GlobalSectorNumber(0),
                         local_sector: LocalSectorNumber(0),
                         first_track_pregap_sectors_left: None,
-                        sectors_left: self.bin_files[0].get_num_sectors(),
+                        sectors_left: self.bin_files[0].get_num_sectors()?,
                     };
                 } else {
                     loc.first_track_pregap_sectors_left = Some(new_pregap_sectors);
                 }
-                return Ok((&[0u8; 2352], None));
+                for x in buffer.iter_mut() {
+                    *x = 0;
+                }
+                return Ok(None);
             }
         }
         if self.location.is_none() {
@@ -658,8 +703,18 @@ impl Cuesheet {
             event = Some(Event::TrackChange);
         }
 
-        let buffer = &self.bin_files[current_bin_file].file;
-        Ok((&buffer[offset..offset + 2352], event))
+        #[cfg(feature = "filebuffer")] {
+            let file_buffer = &self.bin_files[current_bin_file].file;
+            let offset = offset as usize;
+            (&mut buffer[..]).write_all(&file_buffer[offset..offset + 2352])?;
+        }
+        #[cfg(not(feature = "filebuffer"))] {
+            let mut file = &self.bin_files[current_bin_file].file;
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(buffer)?;
+        }
+
+        Ok(event)
     }
 }
 
@@ -677,10 +732,10 @@ struct Location {
     // Number of sectors until the pregap of the first track ends.
     // Only is Some(_) if we are currently in the pregap of the first track.
     // Caution: `global_position`, `local_sector` and `sectors_left` are not valid during that time.
-    first_track_pregap_sectors_left: Option<usize>,
+    first_track_pregap_sectors_left: Option<u64>,
 
     // Number of sectors left until the track changes
-    sectors_left: usize
+    sectors_left: u64
 }
 
 
