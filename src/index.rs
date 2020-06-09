@@ -2,101 +2,7 @@ use std;
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
-use std::ops::{Add, Sub};
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct GlobalSectorNumber(pub u64);
-
-impl GlobalSectorNumber {
-    pub fn to_msf_index(self) -> Result<MsfIndex, MsfParseError> {
-        MsfIndex::from_sector_number(self.0)
-    }
-}
-
-impl Add for GlobalSectorNumber {
-    type Output = GlobalSectorNumber;
-    #[inline]
-    fn add(self, rhs: GlobalSectorNumber) -> GlobalSectorNumber {
-        GlobalSectorNumber(self.0 + rhs.0)
-    }
-}
-
-impl Sub for GlobalSectorNumber {
-    type Output = GlobalSectorNumber;
-    #[inline]
-    fn sub(self, rhs: GlobalSectorNumber) -> GlobalSectorNumber {
-        GlobalSectorNumber(self.0 - rhs.0)
-    }
-}
-
-impl Add<LocalSectorNumber> for GlobalSectorNumber {
-    type Output = GlobalSectorNumber;
-    #[inline]
-    fn add(self, rhs: LocalSectorNumber) -> GlobalSectorNumber {
-        GlobalSectorNumber(self.0 + rhs.0)
-    }
-}
-
-impl Add<u64> for GlobalSectorNumber {
-    type Output = GlobalSectorNumber;
-    #[inline]
-    fn add(self, rhs: u64) -> GlobalSectorNumber {
-        GlobalSectorNumber(self.0 + rhs)
-    }
-}
-
-impl Sub<u64> for GlobalSectorNumber {
-    type Output = GlobalSectorNumber;
-    #[inline]
-    fn sub(self, rhs: u64) -> GlobalSectorNumber {
-        GlobalSectorNumber(self.0 - rhs)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct LocalSectorNumber(pub u64);
-
-impl LocalSectorNumber {
-    pub fn to_byte_offset(self) -> u64 {
-        self.0 * 2352
-    }
-
-    pub fn to_msf_index(self) -> Result<MsfIndex, MsfParseError> {
-        MsfIndex::from_sector_number(self.0)
-    }
-}
-
-impl Add for LocalSectorNumber {
-    type Output = LocalSectorNumber;
-    #[inline]
-    fn add(self, rhs: LocalSectorNumber) -> LocalSectorNumber {
-        LocalSectorNumber(self.0 + rhs.0)
-    }
-}
-
-impl Sub for LocalSectorNumber {
-    type Output = LocalSectorNumber;
-    #[inline]
-    fn sub(self, rhs: LocalSectorNumber) -> LocalSectorNumber {
-        LocalSectorNumber(self.0 - rhs.0)
-    }
-}
-
-impl Add<u64> for LocalSectorNumber {
-    type Output = LocalSectorNumber;
-    #[inline]
-    fn add(self, rhs: u64) -> LocalSectorNumber {
-        LocalSectorNumber(self.0 + rhs)
-    }
-}
-
-impl Sub<u64> for LocalSectorNumber {
-    type Output = LocalSectorNumber;
-    #[inline]
-    fn sub(self, rhs: u64) -> LocalSectorNumber {
-        LocalSectorNumber(self.0 - rhs)
-    }
-}
 
 #[derive(Debug, PartialEq)]
 pub enum MsfParseError {
@@ -106,11 +12,7 @@ pub enum MsfParseError {
 }
 
 impl Error for MsfParseError {
-    fn description(&self) -> &str {
-        "Could not parse MSF Timestamp"
-    }
-
-    fn cause(&self) -> Option<&Error> {
+    fn cause(&self) -> Option<&dyn Error> {
         use MsfParseError::*;
         match *self {
             ParseIntError(ref inner_err) => Some(inner_err),
@@ -121,7 +23,7 @@ impl Error for MsfParseError {
 
 impl fmt::Display for MsfParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.description())
+        write!(f, "Could not parse MSF Timestamp")
     }
 }
 
@@ -177,7 +79,7 @@ impl MsfIndex {
         }
     }
 
-    pub fn from_sector_number(sector_no: u64) -> Result<MsfIndex, MsfParseError> {
+    pub fn from_lba(sector_no: u32) -> Result<MsfIndex, MsfParseError> {
         let mut temp_sectors = sector_no;
         let m = temp_sectors / (60 * 75);
         temp_sectors -= m * 60 * 75;
@@ -188,9 +90,9 @@ impl MsfIndex {
         MsfIndex::new(m as u8, s as u8, f as u8)
     }
 
-    pub fn to_sector_number(&self) -> u64 {
+    pub fn to_lba(&self) -> u32 {
         let MsfIndex(m,s,f) = *self;
-        m as u64 * 60 * 75 + s as u64 * 75 + f as u64
+        m as u32 * 60 * 75 + s as u32 * 75 + f as u32
     }
 
     pub fn to_bcd_values(&self) -> (u8, u8, u8) {
@@ -213,8 +115,8 @@ impl fmt::Display for MsfIndex {
 
 impl Ord for MsfIndex {
     fn cmp(&self, other: &MsfIndex) -> Ordering {
-        let self_sector = self.to_sector_number();
-        let other_sector = &other.to_sector_number();
+        let self_sector = self.to_lba();
+        let other_sector = &other.to_lba();
         self_sector.cmp(other_sector)
     }
 }

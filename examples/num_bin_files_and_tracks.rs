@@ -10,11 +10,11 @@ fn main() {
         Some(s) => s,
         None => panic!("No file supplied.")
     };
-    let test = Cuesheet::open_cue(filename);
+    let test = Cuesheet::from_cue_file(filename);
     if let Err(e) = test {
         println!("An error ocurred parsing the cue sheet: {:?}", e);
     } else if let Ok(res) = test {
-        println!("Seems like everything worked fine! Number of bin files: {}", res.get_num_bin_files());
-        println!("Number of tracks: {}", res.get_num_tracks());
+        println!("Seems like everything worked fine! Number of bin files: {}", res.num_bin_files());
+        println!("Number of tracks: {}", res.num_tracks());
     }
 }
