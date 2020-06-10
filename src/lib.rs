@@ -446,8 +446,7 @@ impl Cuesheet {
 
     pub fn current_global_msf(&self) -> Result<MsfIndex, CueParseError> {
         if let Some(ref loc) = self.location {
-            // HACK! I think we need to add the real amount of pregaps here
-            let global_msf = MsfIndex::from_lba(loc.global_lba + 150)?;
+            let global_msf = MsfIndex::from_lba(loc.global_lba)?;
             debug!("before: {:?}, after: {:?}", loc.global_lba, global_msf);
             Ok(global_msf)
         } else {
@@ -502,9 +501,20 @@ impl Cuesheet {
     // TODO: Change error type
     pub fn set_location(&mut self, target: MsfIndex) -> Result<(), CueParseError> {
         // TODO: Subtract all pregaps not present in the bin files
-        let target_lba = target.to_lba() - 150;
+        let target_lba = target.to_lba();
 
-        let mut current_lba_left = target_lba;
+        // Hack for pregap of first track
+        if target_lba < 150 {
+            self.location = Some(Location {
+                bin_file_no: 0,
+                track_in_bin: 0,
+                global_lba: target_lba,
+                bin_local_lba: 0,
+            });
+            return Ok(());
+        }
+
+        let mut current_lba_left = target_lba - 150;
         for (bin_file_no, bin_file) in self.bin_files.iter().enumerate() {
             let num_sectors_bin = bin_file.num_sectors()?;
             if num_sectors_bin > current_lba_left {
@@ -538,6 +548,13 @@ impl Cuesheet {
 
     pub fn advance_position(&mut self) -> Result<Option<Event>, CueParseError> {
         if let Some(ref mut loc) = self.location {
+            if loc.global_lba < 150 {
+                // Just doing this should be okay as the correct bin file,
+                // track and local LBA are selected for starting to read at sector
+                // (0,2,0) when seeking to the first track's pregap in `set_location()`.
+                loc.global_lba += 1;
+                return Ok(None);
+            }
             let bin_file = &self.bin_files[loc.bin_file_no];
             let track = &bin_file.tracks[loc.track_in_bin];
             let track_end = track.starting_lba + track.num_sectors;
@@ -565,6 +582,12 @@ impl Cuesheet {
     pub fn copy_current_sector(&self, buf: &mut [u8]) -> Result<(), CueParseError> {
         if let Some(loc) = self.location {
             debug!("Reading sector {}, local {}", loc.global_lba, loc.bin_local_lba);
+            if loc.global_lba < 150 {
+                for x in buf.iter_mut() {
+                    *x = 0;
+                }
+                return Ok(());
+            }
             let mut file = &self.bin_files[loc.bin_file_no].file;
             file.seek(SeekFrom::Start(loc.bin_local_lba as u64 * 2352))?;
             file.read_exact(buf)?;
