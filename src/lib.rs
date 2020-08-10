@@ -9,16 +9,16 @@ extern crate serde;
 extern crate vec_map;
 
 mod index;
+mod sbi;
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::fs::File;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::error::Error;
 use std::str;
-
-use std::fs::File;
-use std::io::{Seek, SeekFrom};
 
 use vec_map::VecMap;
 
@@ -210,7 +210,8 @@ impl BinFile {
 
 pub struct Cuesheet {
     bin_files: Vec<BinFile>,
-    location: Option<Location>
+    location: Option<Location>,
+    invalid_subq_lbas: Option<BTreeSet<u32>>,
 }
 
 fn parse_file_line(line: &str, cue_dir: Option<&Path>) -> Result<BinFile, CueParseError> {
@@ -373,9 +374,23 @@ impl Cuesheet {
         } else {
             return Err(CueParseError::NoBinFiles);
         }
+
+        let sbi_path = path.as_ref().with_extension("sbi");
+        let mut invalid_subq_lbas = None;
+        if sbi_path.exists() {
+            match sbi::load_sbi_file(sbi_path) {
+                Ok(set) => {
+                    info!("Found and loaded SBI file");
+                    invalid_subq_lbas = Some(set);
+                }
+                Err(e) => warn!("Failed to load SBI file: {}", e),
+            }
+        }
+
         Ok(Cuesheet{
             bin_files,
-            location: None
+            location: None,
+            invalid_subq_lbas,
         })
     }
 
@@ -385,6 +400,18 @@ impl Cuesheet {
 
     pub fn num_tracks(&self) -> usize {
         std::iter::Sum::sum(self.bin_files.iter().map(|x| x.tracks.len()))
+    }
+
+    pub fn current_subchannel_q_valid(&self) -> bool {
+        if let Some(ref invalid_subq_lbas) = self.invalid_subq_lbas {
+            if let Some(loc) = self.location {
+                !invalid_subq_lbas.contains(&loc.global_lba)
+            } else {
+                true
+            }
+        } else {
+            true
+        }
     }
 
     pub fn current_track(&self) -> Result<u8, CueParseError> {
