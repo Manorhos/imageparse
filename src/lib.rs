@@ -281,7 +281,8 @@ fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueParseError> {
 
 #[derive(PartialEq)]
 pub enum Event {
-    TrackChange
+    TrackChange,
+    EndOfDisc
 }
 
 impl Cuesheet {
@@ -592,12 +593,15 @@ impl Cuesheet {
             } else {
                 if bin_file.tracks.len() > loc.track_in_bin + 1 {
                     loc.track_in_bin += 1;
+                    Ok(Some(Event::TrackChange))
                 } else if self.bin_files.len() > loc.bin_file_no + 1 {
                     loc.bin_file_no += 1;
                     loc.track_in_bin = 0;
                     loc.bin_local_lba = 0;
-                } // TODO else end of disc?
-                Ok(Some(Event::TrackChange))
+                    Ok(Some(Event::TrackChange))
+                } else {
+                    Ok(Some(Event::EndOfDisc))
+                }
             }
             // TODO start reading sector asynchronously
         } else {
