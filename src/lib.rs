@@ -592,7 +592,7 @@ impl Cuesheet {
             } else {
                 if bin_file.tracks.len() > loc.track_in_bin + 1 {
                     loc.track_in_bin += 1;
-                } else if self.bin_files.len() >= loc.bin_file_no {
+                } else if self.bin_files.len() > loc.bin_file_no + 1 {
                     loc.bin_file_no += 1;
                     loc.track_in_bin = 0;
                     loc.bin_local_lba = 0;
