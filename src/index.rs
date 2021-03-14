@@ -1,40 +1,22 @@
 use std;
 use std::cmp::Ordering;
-use std::error::Error;
 use std::fmt;
 
 use crate::debug;
 
 #[cfg(feature = "serde-support")]
 use serde_derive::{Deserialize, Serialize};
+use thiserror::Error;
 
-#[derive(Debug, PartialEq)]
+
+#[derive(Debug, Error, PartialEq)]
 pub enum MsfParseError {
-    ParseIntError(std::num::ParseIntError),
+    #[error("Error parsing integer while parsing MSF index")]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error("Index out of range while parsing MSF index")]
     OutOfRangeError,
+    #[error("Error parsing MSF index")]
     InvalidMsfError
-}
-
-impl Error for MsfParseError {
-    fn cause(&self) -> Option<&dyn Error> {
-        use MsfParseError::*;
-        match *self {
-            ParseIntError(ref inner_err) => Some(inner_err),
-            _ => None
-        }
-    }
-}
-
-impl fmt::Display for MsfParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Could not parse MSF Timestamp")
-    }
-}
-
-impl From<std::num::ParseIntError> for MsfParseError {
-    fn from(err: std::num::ParseIntError) -> MsfParseError {
-        MsfParseError::ParseIntError(err)
-    }
 }
 
 

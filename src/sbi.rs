@@ -1,6 +1,4 @@
 use std::collections::BTreeSet;
-use std::error::Error;
-use std::fmt;
 use std::fs::File;
 use std::path::Path;
 use std::io::Read;
@@ -8,49 +6,19 @@ use std::io::Read;
 use crate::index::{MsfIndex, MsfParseError};
 use crate::debug;
 
+use thiserror::Error;
 
-#[derive(Debug)]
+
+#[derive(Debug, Error)]
 pub enum SbiParseError {
-    MsfParseError(MsfParseError),
-    IoError(std::io::Error),
+    #[error(transparent)]
+    MsfParseError(#[from] MsfParseError),
+    #[error("I/O error")]
+    IoError(#[from] std::io::Error),
+    #[error("Invalid mode/format specified")]
     InvalidMode,
+    #[error("Input file does not seem like an SBI file (Magic doesn't match)")]
     NotAnSbiFile,
-}
-
-impl Error for SbiParseError {
-    fn cause(&self) -> Option<&dyn Error> {
-        use self::SbiParseError::*;
-        match *self {
-            MsfParseError(ref inner_err) => Some(inner_err),
-            IoError(ref inner_err) => Some(inner_err),
-            _ => None
-        }
-    }
-}
-
-impl fmt::Display for SbiParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::SbiParseError::*;
-        match *self {
-            MsfParseError(ref e) => e.fmt(f),
-            IoError(ref e) => e.fmt(f),
-            InvalidMode => write!(f, "Invalid mode/format specified"),
-            NotAnSbiFile => write!(f, "Input file does not seem like an SBI file \
-                                       (Magic doesn't match)"),
-        }
-    }
-}
-
-impl From<MsfParseError> for SbiParseError {
-    fn from(err: MsfParseError) -> SbiParseError {
-        SbiParseError::MsfParseError(err)
-    }
-}
-
-impl From<std::io::Error> for SbiParseError {
-    fn from(err: std::io::Error) -> SbiParseError {
-        SbiParseError::IoError(err)
-    }
 }
 
 

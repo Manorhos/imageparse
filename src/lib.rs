@@ -2,97 +2,67 @@ mod index;
 mod sbi;
 
 use std::collections::BTreeSet;
-use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::error::Error;
 use std::str;
 
 pub use log::{debug, error, info, warn};
+
+use thiserror::Error;
 
 use vec_map::VecMap;
 
 pub use self::index::{MsfIndex, MsfParseError};
 
 
-#[derive(Debug)]
+// TODO: Rework these, most of these aren't really useful for users of the
+// crate I think...
+#[derive(Debug, Error)]
 pub enum CueParseError {
-    MsfParseError(MsfParseError),
-    ParseIntError(std::num::ParseIntError),
-    IoError(std::io::Error),
+    #[error("Error parsing MSF index")]
+    MsfParseError(#[from] MsfParseError),
+    #[error(transparent)]
+    ParseIntError(#[from] std::num::ParseIntError),
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error("Invalid command in cuesheet")]
     InvalidCommandError(String),
+    #[error("Invalid TRACK line in cuesheet")]
     InvalidTrackLine,
+    #[error("Invalid track number in cuesheet")]
     InvalidTrackNumber,
+    #[error("No tracks in cuesheet")]
     NoTracks,
+    #[error("Track missing index 01 in cuesheet")]
     TrackWithoutIndex01,
+    #[error("Unknown track type {0} in cuesheet")]
     UnknownTrackType(String),
+    #[error("Unknown bin mode {0} in cuesheet")]
     UnknownBinMode(String),
+    #[error("Invalid PREGAP line in cuesheet")]
     InvalidPregapLine,
+    #[error("Invalid INDEX line in cuesheet")]
     InvalidIndexLine,
+    #[error("Invalid index number in cuesheet")]
     InvalidIndexNumber,
+    #[error("No bin files referenced in cuesheet")]
     NoBinFiles,
+    #[error("Error parsing file name in cuesheet")]
     FileNameParseError,
+    #[error("Unexpected TRACK command in cuesheet")]
     TrackCommandWithoutBinFile,
-    PregapNotSupported,
+    #[error("Unexpected INDEX command in cuesheet")]
     IndexCommandWithoutTrack,
-    Utf8Error(str::Utf8Error),
+    #[error("Error parsing input as UTF-8")]
+    Utf8Error(#[from] str::Utf8Error),
+    #[error("Index out of range")]
     OutOfRange,
+    #[error("No location set")]
     NoLocationSet
 }
 
-
-impl Error for CueParseError {
-    fn cause(&self) -> Option<&dyn Error> {
-        use CueParseError::*;
-        match *self {
-            MsfParseError(ref inner_err) => Some(inner_err),
-            IoError(ref inner_err) => Some(inner_err),
-            _ => None
-        }
-    }
-}
-
-impl fmt::Display for CueParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use CueParseError::*;
-        match *self {
-            MsfParseError(ref e) => e.fmt(f),
-            IoError(ref e) => e.fmt(f),
-            InvalidCommandError(ref s) => write!(f, "Invalid Command: {}", s),
-            UnknownTrackType(ref s) => write!(f, "Unknown Track Type: {}", s),
-            UnknownBinMode(ref s) => write!(f, "Unknown Binary File Mode: {}", s),
-            NoBinFiles => write!(f, "No image files referenced in the cue sheet"),
-            PregapNotSupported => write!(f, "PREGAP command not supported yet"),
-            _ => write!(f, "Could not parse Cuesheet")
-        }
-    }
-}
-
-impl From<std::io::Error> for CueParseError {
-    fn from(err: std::io::Error) -> CueParseError {
-        CueParseError::IoError(err)
-    }
-}
-
-impl From<std::num::ParseIntError> for CueParseError {
-    fn from(err: std::num::ParseIntError) -> CueParseError {
-        CueParseError::ParseIntError(err)
-    }
-}
-
-impl From<str::Utf8Error> for CueParseError {
-    fn from(err: str::Utf8Error) -> CueParseError {
-        CueParseError::Utf8Error(err)
-    }
-}
-
-impl From<MsfParseError> for CueParseError {
-    fn from(err: MsfParseError) -> CueParseError {
-        CueParseError::MsfParseError(err)
-    }
-}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BinMode {
