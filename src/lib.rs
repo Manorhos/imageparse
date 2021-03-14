@@ -1,4 +1,6 @@
 pub mod cue;
+#[cfg(feature = "chd")]
+pub mod chd;
 mod index;
 mod sbi;
 
@@ -17,10 +19,15 @@ pub enum ImageError {
     UnsupportedFormat,
     #[error(transparent)]
     CueError(#[from] cue::CueError),
+    #[cfg(feature = "chd")]
+    #[error(transparent)]
+    ChdError(#[from] chd::ChdImageError),
     #[error(transparent)]
     MsfIndexError(#[from] MsfIndexError),
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+    #[error("Index out of range")]
+    OutOfRange,
 }
 
 pub trait Image {
@@ -45,6 +52,15 @@ pub trait Image {
 pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
     where P: AsRef<Path>
 {
+    #[cfg(feature = "chd")] {
+        let chd = chd::ChdImage::open(path.as_ref());
+        if let Ok(chd) = chd {
+            return Ok(Box::new(chd));
+        } else if let Err(e) = chd {
+            error!("Failed to open as CHD: {:?}", e);
+        }
+    }
+
     Ok(Box::new(cue::Cuesheet::from_cue_file(path)?))
 }
 

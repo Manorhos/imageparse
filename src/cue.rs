@@ -55,8 +55,6 @@ pub enum CueError {
     IndexCommandWithoutTrack,
     #[error("Error parsing input as UTF-8")]
     Utf8Error(#[from] str::Utf8Error),
-    #[error("Index out of range")]
-    OutOfRange,
     #[error("No location set")]
     NoLocationSet
 }
@@ -467,7 +465,7 @@ impl Image for Cuesheet {
                 bin_pos_on_disc = bin_pos_on_disc + bin.num_sectors()?;
             }
         }
-        Err(CueError::OutOfRange.into())
+        Err(ImageError::OutOfRange)
     }
 
     // TODO: Change error type
@@ -509,7 +507,7 @@ impl Image for Cuesheet {
                 current_lba_left -= num_sectors_bin;
             }
         }
-        Err(CueError::OutOfRange.into())
+        Err(ImageError::OutOfRange)
     }
 
     fn set_location_to_track(&mut self, track: u8) -> Result<(), ImageError> {
@@ -579,9 +577,4 @@ struct Location {
     track_in_bin: usize,
     global_lba: u32,
     bin_local_lba: u32,
-}
-
-
-#[cfg(test)]
-mod tests {
 }
