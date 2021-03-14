@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::str;
 
-pub use log::{debug, error, info, warn};
+use log::{debug, error, info, warn};
 
 use thiserror::Error;
 
