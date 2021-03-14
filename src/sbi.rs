@@ -6,6 +6,7 @@ use std::path::Path;
 use std::io::Read;
 
 use crate::index::{MsfIndex, MsfParseError};
+use crate::debug;
 
 
 #[derive(Debug)]

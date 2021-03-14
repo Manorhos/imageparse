@@ -1,7 +1,8 @@
 [package]
 name = "imageparse"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Niels Wießner <n.h.wiessner@gmail.com>"]
+edition = "2018"
 license = "MIT/Apache-2.0"
 
 [features]

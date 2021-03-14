@@ -3,6 +3,10 @@ use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt;
 
+use crate::debug;
+
+#[cfg(feature = "serde-support")]
+use serde_derive::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq)]
 pub enum MsfParseError {
@@ -129,7 +133,7 @@ impl PartialOrd for MsfIndex {
 
 #[cfg(test)]
 mod tests {
-    use index::*;
+    use crate::index::*;
 
     #[test]
     fn msf_index_range() {

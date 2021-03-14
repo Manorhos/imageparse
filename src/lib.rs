@@ -1,13 +1,3 @@
-#[macro_use]
-extern crate log;
-
-#[cfg(feature = "serde-support")]
-#[macro_use]
-extern crate serde_derive;
-#[cfg(feature = "serde-support")]
-extern crate serde;
-extern crate vec_map;
-
 mod index;
 mod sbi;
 
@@ -19,6 +9,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::error::Error;
 use std::str;
+
+pub use log::{debug, error, info, warn};
 
 use vec_map::VecMap;
 
