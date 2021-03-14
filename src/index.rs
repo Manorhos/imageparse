@@ -10,13 +10,13 @@ use thiserror::Error;
 
 
 #[derive(Debug, Error, PartialEq)]
-pub enum MsfParseError {
+pub enum MsfIndexError {
     #[error("Error parsing integer while parsing MSF index")]
     ParseIntError(#[from] std::num::ParseIntError),
-    #[error("Index out of range while parsing MSF index")]
+    #[error("Index out of range for MSF index")]
     OutOfRangeError,
     #[error("Error parsing MSF index")]
-    InvalidMsfError
+    InvalidMsfError,
 }
 
 
@@ -26,19 +26,19 @@ pub enum MsfParseError {
 pub struct MsfIndex(u8, u8, u8);
 
 impl MsfIndex {
-    pub fn new(m: u8, s: u8, f: u8) -> Result<MsfIndex, MsfParseError> {
+    pub fn new(m: u8, s: u8, f: u8) -> Result<MsfIndex, MsfIndexError> {
         if m > 99 || s > 59 || f > 74 {
-            Err(MsfParseError::OutOfRangeError)
+            Err(MsfIndexError::OutOfRangeError)
         } else {
             Ok(MsfIndex(m,s,f))
         }
     }
 
-    pub fn from_bcd_values(m_bcd: u8, s_bcd: u8, f_bcd: u8) -> Result<MsfIndex, MsfParseError> {
+    pub fn from_bcd_values(m_bcd: u8, s_bcd: u8, f_bcd: u8) -> Result<MsfIndex, MsfIndexError> {
         if (m_bcd & 0xf0) > 0x90 || (m_bcd & 0x0f) > 0x09 ||
            (s_bcd & 0xf0) > 0x90 || (s_bcd & 0x0f) > 0x09 ||
            (f_bcd & 0xf0) > 0x90 || (f_bcd & 0x0f) > 0x09 {
-            Err(MsfParseError::OutOfRangeError)
+            Err(MsfIndexError::OutOfRangeError)
         } else {
             let m = (m_bcd >> 4) * 10 + (m_bcd & 0x0f);
             let s = (s_bcd >> 4) * 10 + (s_bcd & 0x0f);
@@ -49,7 +49,7 @@ impl MsfIndex {
         }
     }
 
-    pub fn try_from_str(s: &str) -> Result<MsfIndex, MsfParseError> {
+    pub fn try_from_str(s: &str) -> Result<MsfIndex, MsfIndexError> {
         let s = s.trim();
         let colon_matches = s.split(":").collect::<Vec<&str>>();
         debug!("{:?}", colon_matches);
@@ -61,11 +61,11 @@ impl MsfIndex {
             );
             MsfIndex::new(m, s, f)
         } else {
-            Err(MsfParseError::InvalidMsfError)
+            Err(MsfIndexError::InvalidMsfError)
         }
     }
 
-    pub fn from_lba(sector_no: u32) -> Result<MsfIndex, MsfParseError> {
+    pub fn from_lba(sector_no: u32) -> Result<MsfIndex, MsfIndexError> {
         let mut temp_sectors = sector_no;
         let m = temp_sectors / (60 * 75);
         temp_sectors -= m * 60 * 75;
@@ -123,8 +123,8 @@ mod tests {
         assert_eq!(MsfIndex::new(13, 37, 42).unwrap(), MsfIndex(13, 37, 42));
         assert_eq!(MsfIndex::new(99, 59, 74).unwrap(), MsfIndex(99, 59, 74));
 
-        assert_eq!(MsfIndex::new(99, 59, 75), Err(MsfParseError::OutOfRangeError));
-        assert_eq!(MsfIndex::new(99, 60, 74), Err(MsfParseError::OutOfRangeError));
-        assert_eq!(MsfIndex::new(100, 59, 74), Err(MsfParseError::OutOfRangeError));
+        assert_eq!(MsfIndex::new(99, 59, 75), Err(MsfIndexError::OutOfRangeError));
+        assert_eq!(MsfIndex::new(99, 60, 74), Err(MsfIndexError::OutOfRangeError));
+        assert_eq!(MsfIndex::new(100, 59, 74), Err(MsfIndexError::OutOfRangeError));
     }
 }

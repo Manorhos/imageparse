@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 use std::io::Read;
 
-use crate::index::{MsfIndex, MsfParseError};
+use crate::index::{MsfIndex, MsfIndexError};
 use crate::debug;
 
 use thiserror::Error;
@@ -12,7 +12,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SbiParseError {
     #[error(transparent)]
-    MsfParseError(#[from] MsfParseError),
+    MsfParseError(#[from] MsfIndexError),
     #[error("I/O error")]
     IoError(#[from] std::io::Error),
     #[error("Invalid mode/format specified")]
