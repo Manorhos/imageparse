@@ -6,7 +6,9 @@ mod sbi;
 
 pub use self::index::{MsfIndex, MsfIndexError};
 
-use std::path::Path;
+use std::{path::Path};
+#[cfg(feature = "chd")]
+use std::{fs::File, io::Read};
 
 use log::{debug, error, info, warn};
 
@@ -53,15 +55,20 @@ pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
     where P: AsRef<Path>
 {
     #[cfg(feature = "chd")] {
-        let chd = chd::ChdImage::open(path.as_ref());
-        if let Ok(chd) = chd {
-            return Ok(Box::new(chd));
-        } else if let Err(e) = chd {
-            debug!("Failed to open as CHD: {:?}", e);
+        let mut magic = [0u8; 8];
+        File::open(path.as_ref())?.read_exact(&mut magic)?;
+        if &magic == b"MComprHD" {
+            return Ok(Box::new(chd::ChdImage::open(path.as_ref())?));
         }
     }
 
-    Ok(Box::new(cue::Cuesheet::from_cue_file(path)?))
+    if let Some(ext) = path.as_ref().extension() {
+        if ext.to_string_lossy().to_lowercase() == "cue" {
+            return Ok(Box::new(cue::Cuesheet::from_cue_file(path)?));
+        }
+    }
+
+    Err(ImageError::UnsupportedFormat)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
