@@ -20,11 +20,6 @@ const FIRST_TRACK_PREGAP: u32 = 150;
 struct Track {
     start_lba: u32,
     track_type: TrackType,
-
-    // Tracks are padded to multiples of 4 sectors in CHDs.
-    // This is the number of padding sectors that has to be taken
-    // into account when calculating the LBAs for a particular track.
-    padding_offset: u32,
     track_info: CdTrackInfo,
 }
 
@@ -71,7 +66,6 @@ impl ChdImage {
         let mut tracks = Vec::new();
         if let Ok(chd_tracks) = chd.cd_tracks() {
             let mut current_lba = FIRST_TRACK_PREGAP;
-            let mut total_padding = 0;
             for chd_track in chd_tracks {
                 let track_type = match chd_track.track_type.as_str() {
                     "MODE1_RAW" => TrackType::Mode1,
@@ -81,12 +75,9 @@ impl ChdImage {
                 };
                 let start_lba = current_lba;
                 current_lba += chd_track.frames;
-                let padding_offset = total_padding;
-                total_padding += chd_track.frames % 4;
                 tracks.push(Track {
                     start_lba,
                     track_type,
-                    padding_offset,
                     track_info: chd_track
                 });
             }
@@ -133,9 +124,7 @@ impl ChdImage {
 
         self.update_current_track(lba)?;
 
-        let current_track = &self.tracks[self.current_track];
-
-        let lba = lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
+        let lba = lba - FIRST_TRACK_PREGAP;
         debug!("set_location_lba {}", lba);
         let hunk_no = lba / self.sectors_per_hunk;
         if hunk_no > self.chd.num_hunks() {
@@ -255,8 +244,7 @@ impl Image for ChdImage {
             buf.fill(0);
             return Ok(());
         }
-        let current_track = &self.tracks[self.current_track];
-        let current_file_lba = self.current_lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
+        let current_file_lba = self.current_lba - FIRST_TRACK_PREGAP;
         let sector_in_hunk = current_file_lba % self.sectors_per_hunk;
         let sector_start = (sector_in_hunk * BYTES_PER_SECTOR) as usize;
         let sector = &self.hunk[sector_start..sector_start + 2352];
