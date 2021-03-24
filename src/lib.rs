@@ -57,7 +57,7 @@ pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
         if let Ok(chd) = chd {
             return Ok(Box::new(chd));
         } else if let Err(e) = chd {
-            error!("Failed to open as CHD: {:?}", e);
+            debug!("Failed to open as CHD: {:?}", e);
         }
     }
 
