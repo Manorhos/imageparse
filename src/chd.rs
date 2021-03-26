@@ -224,6 +224,7 @@ impl Image for ChdImage {
     }
 
     fn advance_position(&mut self) -> Result<Option<Event>, ImageError> {
+        let old_track = self.current_track;
         let res = self.set_location_lba(self.current_lba + 1);
         if let Err(e) = res {
             if let ImageError::OutOfRange = e {
@@ -231,6 +232,8 @@ impl Image for ChdImage {
             } else {
                 Err(e)
             }
+        } else if self.current_track != old_track {
+            Ok(Some(Event::TrackChange))
         } else {
             Ok(None)
         }
