@@ -373,12 +373,9 @@ impl Image for Cuesheet {
     // TODO: Currently only returns 0 or 1
     fn current_index(&self) -> Result<u8, ImageError> {
         if let Some(ref loc) = self.location {
-            let start_of_track = self.bin_files[loc.bin_file_no]
-                                     .tracks[loc.track_in_bin]
-                                     .starting_lba;
             let index_one = *self.bin_files[loc.bin_file_no]
                                 .tracks[loc.track_in_bin]
-                                .indices.get(1).unwrap() - start_of_track;
+                                .indices.get(1).unwrap();
             if loc.bin_local_lba >= index_one {
                 Ok(1)
             } else {
