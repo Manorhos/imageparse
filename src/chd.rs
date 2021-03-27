@@ -1,11 +1,12 @@
 use crate::{Event, Image, ImageError, MsfIndex, TrackType};
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use chdr::{ChdError, ChdFile};
 use chdr::metadata::CdTrackInfo;
 
-use log::debug;
+use log::{debug, info, warn};
 
 use thiserror::Error;
 
@@ -51,13 +52,15 @@ pub struct ChdImage {
     current_track: usize,
 
     sectors_per_hunk: u32,
+
+    invalid_subq_lbas: Option<BTreeSet<u32>>,
 }
 
 impl ChdImage {
     pub fn open<P>(path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
-        let mut chd = ChdFile::open(path)?;
+        let mut chd = ChdFile::open(path.as_ref())?;
 
         if chd.hunk_len() % BYTES_PER_SECTOR != 0 {
             return Err(ChdImageError::WrongHunkSize);
@@ -95,6 +98,18 @@ impl ChdImage {
             }
         }
 
+        let sbi_path = path.as_ref().with_extension("sbi");
+        let mut invalid_subq_lbas = None;
+        if sbi_path.exists() {
+            match crate::sbi::load_sbi_file(sbi_path) {
+                Ok(set) => {
+                    info!("Found and loaded SBI file");
+                    invalid_subq_lbas = Some(set);
+                }
+                Err(e) => warn!("Failed to load SBI file: {}", e),
+            }
+        }
+
         Ok(ChdImage {
             chd,
             hunk,
@@ -105,6 +120,8 @@ impl ChdImage {
             sectors_per_hunk,
 
             tracks,
+
+            invalid_subq_lbas
         })
     }
 
@@ -161,8 +178,11 @@ impl Image for ChdImage {
     }
 
     fn current_subchannel_q_valid(&self) -> bool {
-        // TODO
-        true
+        if let Some(ref invalid_subq_lbas) = self.invalid_subq_lbas {
+            !invalid_subq_lbas.contains(&self.current_lba)
+        } else {
+            true
+        }
     }
 
     fn current_track(&self) -> Result<u8, ImageError> {
