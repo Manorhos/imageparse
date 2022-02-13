@@ -521,7 +521,7 @@ impl Image for Cuesheet {
     }
 
     // `buf` needs to be 2352 bytes long.
-    fn copy_current_sector(&self, buf: &mut [u8]) -> Result<(), ImageError> {
+    fn copy_current_sector(&mut self, buf: &mut [u8]) -> Result<(), ImageError> {
         debug!("Reading sector {}, local {}", self.location.global_lba, self.location.bin_local_lba);
         if self.location.global_lba < 150 {
             for x in buf.iter_mut() {

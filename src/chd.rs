@@ -1,4 +1,5 @@
-use crate::{Event, Image, ImageError, MsfIndex, TrackType};
+#[cfg(feature = "multithreading")]
+mod chd_thread;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -10,6 +11,7 @@ use log::{debug, info, warn};
 
 use thiserror::Error;
 
+use crate::{Event, Image, ImageError, MsfIndex, TrackType};
 
 const BYTES_PER_SECTOR: u32 =  2352 + 96;
 
@@ -38,10 +40,15 @@ pub enum ChdImageError {
     #[error("Wrong buffer size, needs to be 2352 bytes")]
     WrongBufferSize,
     #[error("Unsupported sector format: {0}")]
-    UnsupportedSectorFormat(String)
+    UnsupportedSectorFormat(String),
+    #[error("Unknown error reading hunk")]
+    HunkReadError,
 }
 
 pub struct ChdImage {
+    #[cfg(feature = "multithreading")]
+    hunk_reader: chd_thread::ChdHunkReader,
+    #[cfg(not(feature = "multithreading"))]
     chd: ChdFile,
     tracks: Vec<Track>,
 
@@ -51,6 +58,8 @@ pub struct ChdImage {
     // Starts counting from 0
     current_track: usize,
 
+    num_hunks: u32,
+    hunk_len: u32,
     sectors_per_hunk: u32,
 
     invalid_subq_lbas: Option<BTreeSet<u32>>,
@@ -62,14 +71,16 @@ impl ChdImage {
     {
         let mut chd = ChdFile::open(path.as_ref())?;
 
-        if chd.hunk_len() % BYTES_PER_SECTOR != 0 {
+        let num_hunks = chd.num_hunks();
+        let hunk_len = chd.hunk_len();
+        let sectors_per_hunk = hunk_len / BYTES_PER_SECTOR;
+
+        if hunk_len % BYTES_PER_SECTOR != 0 {
             return Err(ChdImageError::WrongHunkSize);
         }
 
-        let mut hunk = vec![0; chd.hunk_len() as usize];
+        let mut hunk = vec![0; hunk_len as usize];
         chd.read_hunk(0, &mut hunk[..])?;
-
-        let sectors_per_hunk = chd.hunk_len() / BYTES_PER_SECTOR;
 
         let mut tracks = Vec::new();
         if let Ok(chd_tracks) = chd.cd_tracks() {
@@ -111,12 +122,17 @@ impl ChdImage {
         }
 
         Ok(ChdImage {
+            #[cfg(feature = "multithreading")]
+            hunk_reader: chd_thread::ChdHunkReader::new(chd),
+            #[cfg(not(feature = "multithreading"))]
             chd,
             hunk,
             current_hunk_no: 0,
             current_lba: 150,
             current_track: 0,
 
+            num_hunks,
+            hunk_len,
             sectors_per_hunk,
 
             tracks,
@@ -142,6 +158,30 @@ impl ChdImage {
         }
     }
 
+    #[cfg(not(feature = "multithreading"))]
+    fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdError> {
+        self.chd.read_hunk(hunk_no, &mut self.hunk[..])
+    }
+
+    #[cfg(feature = "multithreading")]
+    fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdImageError> {
+        let mut recycled_buf = std::mem::take(&mut self.hunk);
+
+        // If the last requested hunk wasn't received at this point, it's not needed anymore.
+        // `self.hunk` is just an empty Vec then, so we can throw it away and just recycle
+        // the Vec we receive now.
+        if self.hunk_reader.hunk_read_pending() {
+            if let Some(hunk_vec) = self.hunk_reader.recv_hunk() {
+                recycled_buf = hunk_vec;
+            } else {
+                return Err(ChdImageError::HunkReadError.into());
+            }
+        }
+
+        self.hunk_reader.read_hunk(hunk_no, recycled_buf);
+        Ok(())
+    }
+
     fn set_location_lba(&mut self, lba: u32) -> Result<(), ImageError> {
         self.current_lba = lba;
         // TODO: Can we really assume that the first track's pregap is always
@@ -158,12 +198,11 @@ impl ChdImage {
         let lba = lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
         debug!("set_location_lba {}", lba);
         let hunk_no = lba / self.sectors_per_hunk;
-        if hunk_no > self.chd.num_hunks() {
+        if hunk_no > self.num_hunks {
             return Err(ImageError::OutOfRange);
         }
         if hunk_no != self.current_hunk_no {
-            let res = self.chd.read_hunk(hunk_no, &mut self.hunk[..]);
-            if let Err(e) = res {
+            if let Err(e) = self.read_hunk(hunk_no) {
                 return Err(ChdImageError::from(e).into());
             }
             self.current_hunk_no = hunk_no;
@@ -232,7 +271,7 @@ impl Image for ChdImage {
         // Track 0: Special case for PlayStation, return length of whole disc
         // TODO: Make this less ugly?
         if track == 0 {
-            let len = self.chd.num_hunks() * self.chd.hunk_len();
+            let len = self.num_hunks * self.hunk_len;
             let num_sectors = FIRST_TRACK_PREGAP + len / BYTES_PER_SECTOR;
             Ok(MsfIndex::from_lba(num_sectors)?)
         } else if track <= self.tracks.len() as u8 {
@@ -273,7 +312,7 @@ impl Image for ChdImage {
         }
     }
 
-    fn copy_current_sector(&self, buf: &mut[u8]) -> Result<(), ImageError> {
+    fn copy_current_sector(&mut self, buf: &mut[u8]) -> Result<(), ImageError> {
         if buf.len() != 2352 {
             return Err(ChdImageError::WrongBufferSize.into())
         }
@@ -285,6 +324,16 @@ impl Image for ChdImage {
         let current_file_lba = self.current_lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
         let sector_in_hunk = current_file_lba % self.sectors_per_hunk;
         let sector_start = (sector_in_hunk * BYTES_PER_SECTOR) as usize;
+
+        #[cfg(feature = "multithreading")]
+        if self.hunk_reader.hunk_read_pending() {
+            if let Some(hunk_vec) = self.hunk_reader.recv_hunk() {
+                self.hunk = hunk_vec;
+            } else {
+                return Err(ChdImageError::HunkReadError.into());
+            }
+        }
+
         let sector = &self.hunk[sector_start..sector_start + 2352];
         buf.clone_from_slice(sector);
 

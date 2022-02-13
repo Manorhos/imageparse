@@ -48,7 +48,7 @@ pub trait Image {
     fn advance_position(&mut self) -> Result<Option<Event>, ImageError>;
 
     /// `buf` is expected to be 2352 bytes long
-    fn copy_current_sector(&self, buf: &mut[u8]) -> Result<(), ImageError>;
+    fn copy_current_sector(&mut self, buf: &mut[u8]) -> Result<(), ImageError>;
 }
 
 pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
