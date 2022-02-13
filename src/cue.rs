@@ -55,8 +55,6 @@ pub enum CueError {
     IndexCommandWithoutTrack,
     #[error("Error parsing input as UTF-8")]
     Utf8Error(#[from] str::Utf8Error),
-    #[error("No location set")]
-    NoLocationSet
 }
 
 
@@ -159,7 +157,7 @@ impl BinFile {
 
 pub struct Cuesheet {
     bin_files: Vec<BinFile>,
-    location: Option<Location>,
+    location: Location,
     invalid_subq_lbas: Option<BTreeSet<u32>>,
 }
 
@@ -333,7 +331,7 @@ impl Cuesheet {
 
         Ok(Cuesheet{
             bin_files,
-            location: None,
+            location: Location::default(),
             invalid_subq_lbas,
         })
     }
@@ -347,86 +345,64 @@ impl Image for Cuesheet {
 
     fn current_subchannel_q_valid(&self) -> bool {
         if let Some(ref invalid_subq_lbas) = self.invalid_subq_lbas {
-            if let Some(loc) = self.location {
-                !invalid_subq_lbas.contains(&loc.global_lba)
-            } else {
-                true
-            }
+            !invalid_subq_lbas.contains(&self.location.global_lba)
         } else {
             true
         }
     }
 
     fn current_track(&self) -> Result<u8, ImageError> {
-        if let Some(ref loc) = self.location {
-            let mut track_no = 0;
-            for i in 1..=loc.bin_file_no {
-                track_no += self.bin_files[i - 1].tracks.len() as u8;
-            }
-            track_no += loc.track_in_bin as u8;
-            Ok(track_no + 1)
-        } else {
-            Err(CueError::NoLocationSet.into())
+        let mut track_no = 0;
+        for i in 1..=self.location.bin_file_no {
+            track_no += self.bin_files[i - 1].tracks.len() as u8;
         }
+        track_no += self.location.track_in_bin as u8;
+        Ok(track_no + 1)
     }
 
     // TODO: Currently only returns 0 or 1
     fn current_index(&self) -> Result<u8, ImageError> {
-        if let Some(ref loc) = self.location {
-            let index_one = *self.bin_files[loc.bin_file_no]
-                                .tracks[loc.track_in_bin]
-                                .indices.get(1).unwrap();
-            if loc.bin_local_lba >= index_one {
-                Ok(1)
-            } else {
-                Ok(0)
-            }
+        let index_one = *self.bin_files[self.location.bin_file_no]
+                            .tracks[self.location.track_in_bin]
+                            .indices.get(1).unwrap();
+        if self.location.bin_local_lba >= index_one {
+            Ok(1)
         } else {
-            Err(CueError::NoLocationSet.into())
+            Ok(0)
         }
     }
 
     fn current_track_local_msf(&self) -> Result<MsfIndex, ImageError> {
-        if let Some(ref loc) = self.location {
-            let start_of_track = self.bin_files[loc.bin_file_no]
-                                     .tracks[loc.track_in_bin]
-                                     .starting_lba;
-            let index_one = *self.bin_files[loc.bin_file_no]
-                                .tracks[loc.track_in_bin]
-                                .indices.get(1).unwrap() - start_of_track;
-            debug!("current_track_local_msf: \
-                    start_of_track: {:?}, index_one: {:?}, loc.local_lba: {}",
-                    start_of_track, index_one, loc.bin_local_lba);
-            let track_local = loc.bin_local_lba - start_of_track;
-            if track_local < index_one {
-                // Negative MSFs are (100,0,0) - x
-                let reference = 100 * 60 * 75;
-                let offset = index_one - track_local;
-                Ok(MsfIndex::from_lba(reference - offset)?)
-            } else {
-                Ok(MsfIndex::from_lba(track_local - index_one)?)
-            }
+        let start_of_track = self.bin_files[self.location.bin_file_no]
+                                    .tracks[self.location.track_in_bin]
+                                    .starting_lba;
+        let index_one = *self.bin_files[self.location.bin_file_no]
+                            .tracks[self.location.track_in_bin]
+                            .indices.get(1).unwrap() - start_of_track;
+        debug!("current_track_local_msf: \
+                start_of_track: {:?}, index_one: {:?}, loc.local_lba: {}",
+                start_of_track, index_one, self.location.bin_local_lba);
+        let track_local = self.location.bin_local_lba - start_of_track;
+        if track_local < index_one {
+            // Negative MSFs are (100,0,0) - x
+            let reference = 100 * 60 * 75;
+            let offset = index_one - track_local;
+            Ok(MsfIndex::from_lba(reference - offset)?)
         } else {
-            Err(CueError::NoLocationSet.into())
+            Ok(MsfIndex::from_lba(track_local - index_one)?)
         }
     }
 
     fn current_global_msf(&self) -> Result<MsfIndex, ImageError> {
-        if let Some(ref loc) = self.location {
-            let global_msf = MsfIndex::from_lba(loc.global_lba)?;
-            debug!("before: {:?}, after: {:?}", loc.global_lba, global_msf);
-            Ok(global_msf)
-        } else {
-            Err(CueError::NoLocationSet.into())
-        }
+        let global_msf = MsfIndex::from_lba(self.location.global_lba)?;
+        debug!("before: {:?}, after: {:?}", self.location.global_lba, global_msf);
+        Ok(global_msf)
     }
 
     fn current_track_type(&self) -> Result<TrackType, ImageError> {
-        if let Some(loc) = self.location {
-            Ok(self.bin_files[loc.bin_file_no].tracks[loc.track_in_bin].track_type)
-        } else {
-            Err(CueError::NoLocationSet.into())
-        }
+        Ok(self.bin_files[self.location.bin_file_no]
+               .tracks[self.location.track_in_bin]
+               .track_type)
     }
 
     fn first_track_type(&self) -> TrackType {
@@ -472,12 +448,12 @@ impl Image for Cuesheet {
 
         // Hack for pregap of first track
         if target_lba < 150 {
-            self.location = Some(Location {
+            self.location = Location {
                 bin_file_no: 0,
                 track_in_bin: 0,
                 global_lba: target_lba,
                 bin_local_lba: 0,
-            });
+            };
             return Ok(());
         }
 
@@ -488,12 +464,12 @@ impl Image for Cuesheet {
                 let bin_offset = current_lba_left;
                 for (track_no, track) in bin_file.tracks.iter().enumerate() {
                     if track.num_sectors > current_lba_left {
-                        self.location = Some(Location {
+                        self.location = Location {
                             bin_file_no,
                             track_in_bin: track_no,
                             global_lba: target_lba,
                             bin_local_lba: bin_offset,
-                        });
+                        };
                         debug!("set_location {:?}, result: {:?}", target, self.location);
                         return Ok(());
                     } else {
@@ -514,57 +490,49 @@ impl Image for Cuesheet {
     }
 
     fn advance_position(&mut self) -> Result<Option<Event>, ImageError> {
-        if let Some(ref mut loc) = self.location {
-            if loc.global_lba < 150 {
-                // Just doing this should be okay as the correct bin file,
-                // track and local LBA are selected for starting to read at sector
-                // (0,2,0) when seeking to the first track's pregap in `set_location()`.
-                loc.global_lba += 1;
-                return Ok(None);
-            }
-            let bin_file = &self.bin_files[loc.bin_file_no];
-            let track = &bin_file.tracks[loc.track_in_bin];
-            let track_end = track.starting_lba + track.num_sectors;
-            loc.global_lba += 1;
-            loc.bin_local_lba += 1;
-            if loc.bin_local_lba < track_end {
-                Ok(None)
-            } else {
-                if bin_file.tracks.len() > loc.track_in_bin + 1 {
-                    loc.track_in_bin += 1;
-                    Ok(Some(Event::TrackChange))
-                } else if self.bin_files.len() > loc.bin_file_no + 1 {
-                    loc.bin_file_no += 1;
-                    loc.track_in_bin = 0;
-                    loc.bin_local_lba = 0;
-                    Ok(Some(Event::TrackChange))
-                } else {
-                    Ok(Some(Event::EndOfDisc))
-                }
-            }
-            // TODO start reading sector asynchronously
-        } else {
-            Err(CueError::NoLocationSet.into())
+        if self.location.global_lba < 150 {
+            // Just doing this should be okay as the correct bin file,
+            // track and local LBA are selected for starting to read at sector
+            // (0,2,0) when seeking to the first track's pregap in `set_location()`.
+            self.location.global_lba += 1;
+            return Ok(None);
         }
+        let bin_file = &self.bin_files[self.location.bin_file_no];
+        let track = &bin_file.tracks[self.location.track_in_bin];
+        let track_end = track.starting_lba + track.num_sectors;
+        self.location.global_lba += 1;
+        self.location.bin_local_lba += 1;
+        if self.location.bin_local_lba < track_end {
+            Ok(None)
+        } else {
+            if bin_file.tracks.len() > self.location.track_in_bin + 1 {
+                self.location.track_in_bin += 1;
+                Ok(Some(Event::TrackChange))
+            } else if self.bin_files.len() > self.location.bin_file_no + 1 {
+                self.location.bin_file_no += 1;
+                self.location.track_in_bin = 0;
+                self.location.bin_local_lba = 0;
+                Ok(Some(Event::TrackChange))
+            } else {
+                Ok(Some(Event::EndOfDisc))
+            }
+        }
+        // TODO start reading sector asynchronously
     }
 
     // `buf` needs to be 2352 bytes long.
     fn copy_current_sector(&self, buf: &mut [u8]) -> Result<(), ImageError> {
-        if let Some(loc) = self.location {
-            debug!("Reading sector {}, local {}", loc.global_lba, loc.bin_local_lba);
-            if loc.global_lba < 150 {
-                for x in buf.iter_mut() {
-                    *x = 0;
-                }
-                return Ok(());
+        debug!("Reading sector {}, local {}", self.location.global_lba, self.location.bin_local_lba);
+        if self.location.global_lba < 150 {
+            for x in buf.iter_mut() {
+                *x = 0;
             }
-            let mut file = &self.bin_files[loc.bin_file_no].file;
-            file.seek(SeekFrom::Start(loc.bin_local_lba as u64 * 2352))?;
-            file.read_exact(buf)?;
-            Ok(())
-        } else {
-            Err(CueError::NoLocationSet.into())
+            return Ok(());
         }
+        let mut file = &self.bin_files[self.location.bin_file_no].file;
+        file.seek(SeekFrom::Start(self.location.bin_local_lba as u64 * 2352))?;
+        file.read_exact(buf)?;
+        Ok(())
     }
 }
 
@@ -574,4 +542,16 @@ struct Location {
     track_in_bin: usize,
     global_lba: u32,
     bin_local_lba: u32,
+}
+
+impl Default for Location {
+    // Use first sector after the first track's pregap as the default
+    fn default() -> Location {
+        Location {
+            bin_file_no: 0,
+            track_in_bin: 0,
+            global_lba: 150,
+            bin_local_lba: 0
+        }
+    }
 }
