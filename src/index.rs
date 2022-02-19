@@ -2,7 +2,7 @@ use std;
 use std::cmp::Ordering;
 use std::fmt;
 
-use crate::debug;
+use log::trace;
 
 #[cfg(feature = "serde-support")]
 use serde_derive::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ impl MsfIndex {
             let m = (m_bcd >> 4) * 10 + (m_bcd & 0x0f);
             let s = (s_bcd >> 4) * 10 + (s_bcd & 0x0f);
             let f = (f_bcd >> 4) * 10 + (f_bcd & 0x0f);
-            debug!("from_bcd_values: Converted (0x{:x}, 0x{:x}, 0x{:x}) to ({}, {}, {})",
+            trace!("from_bcd_values: Converted (0x{:x}, 0x{:x}, 0x{:x}) to ({}, {}, {})",
                    m_bcd, s_bcd, f_bcd, m, s, f);
             MsfIndex::new(m,s,f)
         }
@@ -52,7 +52,7 @@ impl MsfIndex {
     pub fn try_from_str(s: &str) -> Result<MsfIndex, MsfIndexError> {
         let s = s.trim();
         let colon_matches = s.split(":").collect::<Vec<&str>>();
-        debug!("{:?}", colon_matches);
+        trace!("{:?}", colon_matches);
         if colon_matches.len() == 3 {
             let (m, s, f) = (
                 colon_matches[0].parse()?,
@@ -72,7 +72,7 @@ impl MsfIndex {
         let s = temp_sectors / 75;
         temp_sectors -= s * 75;
         let f = temp_sectors;
-        debug!("{} -> ({},{},{})", sector_no, m, s, f);
+        trace!("{} -> ({},{},{})", sector_no, m, s, f);
         MsfIndex::new(m as u8, s as u8, f as u8)
     }
 
@@ -86,7 +86,7 @@ impl MsfIndex {
         let m_bcd = ((m / 10) << 4) + (m % 10);
         let s_bcd = ((s / 10) << 4) + (s % 10);
         let f_bcd = ((f / 10) << 4) + (f % 10);
-        debug!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x})",
+        trace!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x})",
                m, s, f, m_bcd, s_bcd, f_bcd);
         (m_bcd, s_bcd, f_bcd)
     }

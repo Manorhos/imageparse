@@ -7,7 +7,7 @@ use std::path::Path;
 use chdr::{ChdError, ChdFile};
 use chdr::metadata::CdTrackInfo;
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 
 use thiserror::Error;
 
@@ -182,6 +182,19 @@ impl ChdImage {
         Ok(())
     }
 
+    fn hunk_no_for_lba(&self, lba: u32) -> Result<u32, ImageError> {
+        let current_track = &self.tracks[self.current_track];
+
+        let lba = lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
+        let hunk_no = lba / self.sectors_per_hunk;
+        trace!("hunk_no_for_lba {} -> {}", lba, hunk_no);
+        if hunk_no > self.num_hunks {
+            Err(ImageError::OutOfRange)
+        } else {
+            Ok(hunk_no)
+        }
+    }
+
     fn set_location_lba(&mut self, lba: u32) -> Result<(), ImageError> {
         self.current_lba = lba;
         // TODO: Can we really assume that the first track's pregap is always
@@ -193,14 +206,8 @@ impl ChdImage {
 
         self.update_current_track(lba)?;
 
-        let current_track = &self.tracks[self.current_track];
-
-        let lba = lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
-        debug!("set_location_lba {}", lba);
-        let hunk_no = lba / self.sectors_per_hunk;
-        if hunk_no > self.num_hunks {
-            return Err(ImageError::OutOfRange);
-        }
+        let hunk_no = self.hunk_no_for_lba(lba)?;
+        debug!("set_location_lba {} -> hunk_no {}", lba, hunk_no);
         if hunk_no != self.current_hunk_no {
             if let Err(e) = self.read_hunk(hunk_no) {
                 return Err(ChdImageError::from(e).into());
@@ -312,6 +319,16 @@ impl Image for ChdImage {
         }
     }
 
+    #[cfg(feature = "multithreading")]
+    fn advise_prefetch(&mut self, location: MsfIndex) {
+        let hunk_no = self.hunk_no_for_lba(location.to_lba());
+        if let Ok(hunk_no) = hunk_no {
+            if hunk_no == self.current_hunk_no {
+                self.hunk_reader.prefetch_hunk(hunk_no);
+            }
+        }
+    }
+
     fn copy_current_sector(&mut self, buf: &mut[u8]) -> Result<(), ImageError> {
         if buf.len() != 2352 {
             return Err(ChdImageError::WrongBufferSize.into())
@@ -327,8 +344,10 @@ impl Image for ChdImage {
 
         #[cfg(feature = "multithreading")]
         if self.hunk_reader.hunk_read_pending() {
+            let now = std::time::Instant::now();
             if let Some(hunk_vec) = self.hunk_reader.recv_hunk() {
                 self.hunk = hunk_vec;
+                debug!("receiving hunk took {} µs", now.elapsed().as_micros());
             } else {
                 return Err(ChdImageError::HunkReadError.into());
             }

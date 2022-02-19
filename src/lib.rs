@@ -46,6 +46,8 @@ pub trait Image {
     fn set_location(&mut self, target: MsfIndex) -> Result<(), ImageError>;
     fn set_location_to_track(&mut self, track: u8) -> Result<(), ImageError>;
     fn advance_position(&mut self) -> Result<Option<Event>, ImageError>;
+    #[allow(unused)]
+    fn advise_prefetch(&mut self, location: MsfIndex) {}
 
     /// `buf` is expected to be 2352 bytes long
     fn copy_current_sector(&mut self, buf: &mut[u8]) -> Result<(), ImageError>;
