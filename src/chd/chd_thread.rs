@@ -1,38 +1,47 @@
-use std::{sync::mpsc, thread};
+use std::{sync::mpsc::{self, RecvError, SendError}, thread};
 
 use log::{debug, error};
 
 use chdr::{ChdFile, ChdError};
+use lru::LruCache;
+
+
+const NUM_HUNKS_READAHEAD: u32 = 8;
+const NUM_READAHEAD_HUNKS_LOW_WATER: u32 = 2;
+
+// Should never be less than 2 * NUM_HUNKS_READAHEAD to keep normal readahead
+// hunks from being kicked out of the cache by a prefetch
+const CACHE_CAPACITY: usize = 100;
 
 struct ChdThread {
     chd: ChdFile,
     cmd_receiver: mpsc::Receiver<Command>,
-    hunk_sender: mpsc::SyncSender<Vec<u8>>,
+    cmd_while_prefetching: Option<Command>,
+    hunk_sender: mpsc::SyncSender<Result<Vec<u8>, ChdError>>,
 
-    hunk: Vec<u8>,
     num_hunks: u32,
     hunk_len: usize,
 
-    readahead: Option<u32>,
+    hunk_cache: LruCache<u32, Vec<u8>>,
 }
 
 impl ChdThread {
     fn start(chd: ChdFile,
         cmd_receiver: mpsc::Receiver<Command>,
-        hunk_sender: mpsc::SyncSender<Vec<u8>>) -> thread::JoinHandle<()>
+        hunk_sender: mpsc::SyncSender<Result<Vec<u8>, ChdError>>) -> thread::JoinHandle<()>
     {
         let num_hunks = chd.num_hunks();
         let hunk_len = chd.hunk_len() as usize;
         let chd_thread = ChdThread {
             chd,
             cmd_receiver,
+            cmd_while_prefetching: None,
             hunk_sender,
 
-            hunk: vec![0u8; hunk_len],
             num_hunks,
             hunk_len,
 
-            readahead: None,
+            hunk_cache: LruCache::new(CACHE_CAPACITY),
         };
 
         thread::spawn(move || {
@@ -41,54 +50,87 @@ impl ChdThread {
     }
 
     fn run(mut self) {
-        while let Ok(cmd) = self.cmd_receiver.recv() {
-            match cmd {
-                Command::ReadHunk(hunk_no, recycled_hunk_buf) => {
-                    let t = std::time::Instant::now();
-                    if self.readahead == Some(hunk_no) {
-                        self.readahead = None;
-                    } else {
-                        if let Err(e) = self.read_hunk(hunk_no) {
-                            error!("Error reading hunk: {:?}", e);
-                        }
-                    }
-
-                    let hunk_to_send = std::mem::replace(&mut self.hunk, recycled_hunk_buf);
-                    if let Err(_) = self.hunk_sender.send(hunk_to_send) {
-                        break;
-                    }
-                    debug!("Sent hunk {} after {} µs", hunk_no, t.elapsed().as_micros());
-
-                    if hunk_no + 1 < self.num_hunks {
-                        let t = std::time::Instant::now();
-                        if self.read_hunk(hunk_no + 1).is_ok() {
-                            self.readahead = Some(hunk_no + 1);
-                        }
-                        debug!("Readahead took {} µs", t.elapsed().as_micros());
-                    }
-                },
-                Command::PrefetchHunk(hunk_no) => {
-                    if self.readahead != Some(hunk_no) {
-                        let t = std::time::Instant::now();
-                        self.readahead = None;
-                        if self.read_hunk(hunk_no).is_ok() {
-                            self.readahead = Some(hunk_no);
-                        }
-                        debug!("Prefetching hunk {} took {} µs", hunk_no, t.elapsed().as_micros());
-                    }
-                }
+        loop {
+            let result = if let Some(cmd) = self.cmd_while_prefetching {
+                self.cmd_while_prefetching = None;
+                self.handle_command(cmd)
+            } else if let Ok(cmd) = self.cmd_receiver.recv() {
+                self.handle_command(cmd)
+            } else {
+                break
+            };
+            if result.is_err() {
+                break;
             }
         }
     }
 
-    fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdError> {
+    fn handle_command(&mut self, cmd: Command) -> Result<(), SendError<Result<Vec<u8>, ChdError>>> {
+        match cmd {
+            Command::ReadHunk(hunk_no) => {
+                let t = std::time::Instant::now();
+
+                let to_send = self.read_hunk(hunk_no);
+                self.hunk_sender.send(to_send)?;
+                debug!("Sent hunk {} after {} µs", hunk_no, t.elapsed().as_micros());
+
+                let mut low_water_range = (hunk_no + 1)..=(hunk_no + NUM_READAHEAD_HUNKS_LOW_WATER);
+                if self.num_hunks > hunk_no + NUM_READAHEAD_HUNKS_LOW_WATER &&
+                    !low_water_range.all(|x| self.hunk_cache.contains(&x))
+                {
+                    for i in 1..NUM_HUNKS_READAHEAD {
+                        if let Ok(new_cmd) = self.cmd_receiver.try_recv() {
+                            self.cmd_while_prefetching = Some(new_cmd);
+                            break;
+                        }
+                        self.read_hunk_to_cache(hunk_no + i);
+                    }
+                }
+            },
+            Command::PrefetchHunk(hunk_no) => {
+                for i in 0..NUM_HUNKS_READAHEAD {
+                    if let Ok(new_cmd) = self.cmd_receiver.try_recv() {
+                        self.cmd_while_prefetching = Some(new_cmd);
+                        break;
+                    }
+                    self.read_hunk_to_cache(hunk_no + i);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_hunk(&mut self, hunk_no: u32) -> Result<Vec<u8>, ChdError> {
         if hunk_no >= self.num_hunks {
-            error!("Hunk {} out of range", hunk_no);
+            return Err(ChdError::OutOfRange);
         }
 
-        assert_eq!(self.hunk.len(), self.hunk_len);
+        if let Some(buf) = self.hunk_cache.get(&hunk_no) {
+            debug!("Hunk {} is in cache", hunk_no);
+            Ok(buf.clone())
+        } else {
+            let t = std::time::Instant::now();
+            let mut buf = vec![0; self.hunk_len];
+            self.chd.read_hunk(hunk_no, &mut buf[..])?;
+            self.hunk_cache.put(hunk_no, buf.clone());
+            debug!("Hunk {} not in cache, fetching from CHD took {:?}", hunk_no, t.elapsed());
+            Ok(buf)
+        }
+    }
 
-        self.chd.read_hunk(hunk_no, &mut self.hunk[..])
+    fn read_hunk_to_cache(&mut self, hunk_no: u32) {
+        let t = std::time::Instant::now();
+        if hunk_no >= self.num_hunks {
+            return;
+        }
+
+        if !self.hunk_cache.contains(&hunk_no) {
+            let mut buf = vec![0; self.hunk_len];
+            if self.chd.read_hunk(hunk_no, &mut buf[..]).is_ok() {
+                self.hunk_cache.put(hunk_no, buf);
+                debug!("Prefetching hunk {} took {:?}", hunk_no, t.elapsed());
+            }
+        }
     }
 }
 
@@ -97,7 +139,7 @@ pub struct ChdHunkReader {
     hunk_read_pending: bool,
 
     cmd_sender: mpsc::SyncSender<Command>,
-    hunk_receiver: mpsc::Receiver<Vec<u8>>,
+    hunk_receiver: mpsc::Receiver<Result<Vec<u8>, ChdError>>,
 }
 
 impl ChdHunkReader {
@@ -114,18 +156,18 @@ impl ChdHunkReader {
         }
     }
 
-    pub fn read_hunk(&mut self, hunk_no: u32, recycled_buf: Vec<u8>) {
-        if let Err(e) = self.cmd_sender.send(Command::ReadHunk(hunk_no, recycled_buf)) {
+    pub fn read_hunk(&mut self, hunk_no: u32) {
+        if let Err(e) = self.cmd_sender.send(Command::ReadHunk(hunk_no)) {
             error!("Error sending hunk read command: {:?}", e);
         }
         self.hunk_read_pending = true;
     }
 
-    pub fn recv_hunk(&mut self) -> Option<Vec<u8>> {
+    pub fn recv_hunk(&mut self) -> Result<Result<Vec<u8>, ChdError>, RecvError>  {
         assert!(self.hunk_read_pending);
-        let hunk = self.hunk_receiver.recv().ok();
+        let hunk_result = self.hunk_receiver.recv();
         self.hunk_read_pending = false;
-        hunk
+        hunk_result
     }
 
     pub fn prefetch_hunk(&mut self, hunk_no: u32) {
@@ -141,6 +183,6 @@ impl ChdHunkReader {
 
 enum Command {
     // 1st param: hunk number, 2nd param: last hunk buffer for recycling
-    ReadHunk(u32, Vec<u8>),
+    ReadHunk(u32),
     PrefetchHunk(u32)
 }

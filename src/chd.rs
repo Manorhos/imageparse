@@ -3,6 +3,7 @@ mod chd_thread;
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::mpsc::RecvError;
 
 use chdr::{ChdError, ChdFile};
 use chdr::metadata::CdTrackInfo;
@@ -41,8 +42,8 @@ pub enum ChdImageError {
     WrongBufferSize,
     #[error("Unsupported sector format: {0}")]
     UnsupportedSectorFormat(String),
-    #[error("Unknown error reading hunk")]
-    HunkReadError,
+    #[error("Error receiving hunk: {0}")]
+    HunkRecvError(RecvError),
 }
 
 pub struct ChdImage {
@@ -165,20 +166,12 @@ impl ChdImage {
 
     #[cfg(feature = "multithreading")]
     fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdImageError> {
-        let mut recycled_buf = std::mem::take(&mut self.hunk);
-
         // If the last requested hunk wasn't received at this point, it's not needed anymore.
-        // `self.hunk` is just an empty Vec then, so we can throw it away and just recycle
-        // the Vec we receive now.
         if self.hunk_reader.hunk_read_pending() {
-            if let Some(hunk_vec) = self.hunk_reader.recv_hunk() {
-                recycled_buf = hunk_vec;
-            } else {
-                return Err(ChdImageError::HunkReadError.into());
-            }
+            let _ = self.hunk_reader.recv_hunk();
         }
 
-        self.hunk_reader.read_hunk(hunk_no, recycled_buf);
+        self.hunk_reader.read_hunk(hunk_no);
         Ok(())
     }
 
@@ -323,9 +316,7 @@ impl Image for ChdImage {
     fn advise_prefetch(&mut self, location: MsfIndex) {
         let hunk_no = self.hunk_no_for_lba(location.to_lba());
         if let Ok(hunk_no) = hunk_no {
-            if hunk_no == self.current_hunk_no {
-                self.hunk_reader.prefetch_hunk(hunk_no);
-            }
+            self.hunk_reader.prefetch_hunk(hunk_no);
         }
     }
 
@@ -345,11 +336,16 @@ impl Image for ChdImage {
         #[cfg(feature = "multithreading")]
         if self.hunk_reader.hunk_read_pending() {
             let now = std::time::Instant::now();
-            if let Some(hunk_vec) = self.hunk_reader.recv_hunk() {
-                self.hunk = hunk_vec;
-                debug!("receiving hunk took {} µs", now.elapsed().as_micros());
+            let recv = self.hunk_reader.recv_hunk();
+            if let Ok(hunk_result) = recv {
+                if let Ok(hunk) = hunk_result {
+                    self.hunk = hunk;
+                    debug!("receiving hunk took {} µs", now.elapsed().as_micros());
+                } else {
+                    return Err(ChdImageError::ChdError(hunk_result.err().unwrap()).into());
+                }
             } else {
-                return Err(ChdImageError::HunkReadError.into());
+                return Err(ChdImageError::HunkRecvError(recv.err().unwrap()).into());
             }
         }
 
