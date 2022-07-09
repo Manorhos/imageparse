@@ -8,7 +8,7 @@ use std::sync::mpsc::RecvError;
 use chdr::{ChdError, ChdFile};
 use chdr::metadata::CdTrackInfo;
 
-use log::{debug, info, trace, warn};
+use log::{debug, info, trace, warn, error};
 
 use thiserror::Error;
 
@@ -166,12 +166,22 @@ impl ChdImage {
 
     #[cfg(feature = "multithreading")]
     fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdImageError> {
-        // If the last requested hunk wasn't received at this point, it's not needed anymore.
+        // Clear completion
         if self.hunk_reader.hunk_read_pending() {
-            let _ = self.hunk_reader.recv_hunk();
+            let time = std::time::Instant::now();
+            let _ = self.hunk_reader.recv_completion();
+            warn!("Wasted {:?} waiting for old completion", time.elapsed());
         }
 
-        self.hunk_reader.read_hunk(hunk_no);
+        if let Some(hunk) = self.hunk_reader.get_hunk_from_cache(hunk_no) {
+            self.hunk = hunk;
+            debug!("Got new hunk from cache");
+            // Send prefetch to notify thread of us reading the hunk so it
+            // can prefetch more
+            self.hunk_reader.send_prefetch_hunk_command(hunk_no);
+        } else {
+            self.hunk_reader.send_read_hunk_command(hunk_no);
+        }
         Ok(())
     }
 
@@ -316,7 +326,7 @@ impl Image for ChdImage {
     fn advise_prefetch(&mut self, location: MsfIndex) {
         let hunk_no = self.hunk_no_for_lba(location.to_lba());
         if let Ok(hunk_no) = hunk_no {
-            self.hunk_reader.prefetch_hunk(hunk_no);
+            self.hunk_reader.send_prefetch_hunk_command(hunk_no);
         }
     }
 
@@ -336,16 +346,21 @@ impl Image for ChdImage {
         #[cfg(feature = "multithreading")]
         if self.hunk_reader.hunk_read_pending() {
             let now = std::time::Instant::now();
-            let recv = self.hunk_reader.recv_hunk();
-            if let Ok(hunk_result) = recv {
-                if let Ok(hunk) = hunk_result {
-                    self.hunk = hunk;
-                    debug!("receiving hunk took {} µs", now.elapsed().as_micros());
+            let recv = self.hunk_reader.recv_completion();
+            if let Ok(completion) = recv {
+                if let Ok(hunk_no) = completion {
+                    assert_eq!(self.current_hunk_no, hunk_no);
+                    if let Some(hunk) = self.hunk_reader.get_hunk_from_cache(hunk_no) {
+                        self.hunk = hunk;
+                        debug!("Receiving hunk took {:?}", now.elapsed());
+                    } else {
+                        error!("BUG: Hunk not in cache even though it should be");
+                    }
                 } else {
-                    return Err(ChdImageError::ChdError(hunk_result.err().unwrap()).into());
+                    return Err(ChdImageError::ChdError(completion.unwrap_err()).into());
                 }
             } else {
-                return Err(ChdImageError::HunkRecvError(recv.err().unwrap()).into());
+                return Err(ChdImageError::HunkRecvError(recv.unwrap_err()).into());
             }
         }
 
