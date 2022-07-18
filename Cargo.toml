@@ -7,8 +7,9 @@ license = "MIT/Apache-2.0"
 
 [features]
 serde-support = ["serde", "serde_derive"]
-chd = ["chdr"]
 multithreading = ["lru"]
+chd = ["chd_rs", "text_io"]
+default = ["chd"]
 
 [dependencies]
 log = "0.4"
@@ -16,7 +17,8 @@ vec_map = "0.8.2"
 serde = { version = "1.0.8", optional = true }
 serde_derive = { version = "1.0.8", optional = true }
 thiserror = "1.0"
-chdr = { git = "https://github.com/Manorhos/chdr-rs", rev = "dea59a3", optional = true }
+chd_rs = { package = "chd", git = "https://github.com/Manorhos/chd-rs", optional = true }
+text_io = { version = "0.1.10", optional = true }
 lru = { version = "0.7.3", optional = true }
 
 [dev-dependencies]
