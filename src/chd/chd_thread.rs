@@ -2,7 +2,7 @@ use std::{sync::mpsc::{self, RecvError, SendError}, sync::{Arc, Mutex}, thread};
 
 use log::{debug, error};
 
-use chdr::{ChdFile, ChdError};
+use chd_rs::{ChdFile, ChdError};
 use lru::LruCache;
 
 
@@ -13,28 +13,28 @@ const NUM_CMD_SLOTS: usize = 2;
 const CACHE_CAPACITY: usize = 100;
 
 struct ChdThread {
-    chd: ChdFile,
+    chd: ChdFile<std::fs::File>,
     cmd_receiver: mpsc::Receiver<Command>,
     cmd_while_prefetching: Option<Command>,
     hunk_sender: mpsc::SyncSender<Result<u32, ChdError>>,
 
     num_hunks: u32,
-    hunk_len: usize,
 
     // Used to "lock" the hunk in the cache
     last_requested_hunk: u32,
 
     hunk_cache: Arc<Mutex<LruCache<u32, Vec<u8>>>>,
+    // Intermediate buffer for the compressed data, needed for chd crate
+    comp_buf: Vec<u8>,
 }
 
 impl ChdThread {
-    fn start(chd: ChdFile,
+    fn start(chd: ChdFile<std::fs::File>,
         cmd_receiver: mpsc::Receiver<Command>,
         hunk_sender: mpsc::SyncSender<Result<u32, ChdError>>)
         -> (thread::JoinHandle<()>, Arc<Mutex<LruCache<u32, Vec<u8>>>>)
     {
-        let num_hunks = chd.num_hunks();
-        let hunk_len = chd.hunk_len() as usize;
+        let num_hunks = chd.header().hunk_count();
         let hunk_cache = Arc::new(Mutex::new(LruCache::new(CACHE_CAPACITY)));
         let chd_thread = ChdThread {
             chd,
@@ -43,11 +43,11 @@ impl ChdThread {
             hunk_sender,
 
             num_hunks,
-            hunk_len,
 
             last_requested_hunk: 0,
 
             hunk_cache: hunk_cache.clone(),
+            comp_buf: Vec::new(),
         };
 
         (thread::spawn(move || {
@@ -121,7 +121,7 @@ impl ChdThread {
 
     fn read_hunk_to_cache(&mut self, hunk_no: u32) -> Result<u32, ChdError> {
         if hunk_no >= self.num_hunks {
-            return Err(ChdError::OutOfRange);
+            return Err(ChdError::HunkOutOfRange);
         }
 
         // Try to hold the lock for as little at a time as possible as I/O follows.
@@ -138,9 +138,9 @@ impl ChdThread {
         };
 
         if !hunk_contained {
-            let mut buf = vec![0; self.hunk_len];
+            let mut buf = self.chd.get_hunksized_buffer();
             let t = std::time::Instant::now();
-            let result = self.chd.read_hunk(hunk_no, &mut buf[..]);
+            let result = self.chd.hunk(hunk_no)?.read_hunk_in(&mut self.comp_buf, &mut buf);
             if result.is_ok() {
                 self.hunk_cache.lock().unwrap().put(hunk_no, buf);
                 debug!("Reading hunk {} took {:?}", hunk_no, t.elapsed());
@@ -165,7 +165,7 @@ pub struct ChdHunkReader {
 }
 
 impl ChdHunkReader {
-    pub fn new(chd: ChdFile) -> ChdHunkReader {
+    pub fn new(chd: ChdFile<std::fs::File>) -> ChdHunkReader {
         let (cmd_sender, cmd_receiver) = mpsc::sync_channel(NUM_CMD_SLOTS);
         let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
 

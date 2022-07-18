@@ -1,18 +1,22 @@
 #[cfg(feature = "multithreading")]
 mod chd_thread;
 
+mod track_metadata;
+
 use std::collections::BTreeSet;
+use std::convert::TryInto;
 use std::path::Path;
 use std::sync::mpsc::RecvError;
 
-use chdr::{ChdError, ChdFile};
-use chdr::metadata::CdTrackInfo;
+use chd_rs::{ChdError, ChdFile};
+use chd_rs::metadata::ChdMetadata;
 
 use log::{debug, info, trace, warn, error};
 
 use thiserror::Error;
 
 use crate::{Event, Image, ImageError, MsfIndex, TrackType};
+use track_metadata::CdTrackInfo;
 
 const BYTES_PER_SECTOR: u32 =  2352 + 96;
 
@@ -36,6 +40,10 @@ struct Track {
 pub enum ChdImageError {
     #[error(transparent)]
     ChdError(#[from] ChdError),
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error("Error while parsing track metadata: {0}")]
+    TrackParseError(#[from] text_io::Error),
     #[error("CHD file does not seem like a CDROM image (wrong hunk size)")]
     WrongHunkSize,
     #[error("Wrong buffer size, needs to be 2352 bytes")]
@@ -44,15 +52,21 @@ pub enum ChdImageError {
     UnsupportedSectorFormat(String),
     #[error("Error receiving hunk: {0}")]
     HunkRecvError(RecvError),
+    #[error("CHD contains no CDROM tracks")]
+    NoTracks,
 }
 
 pub struct ChdImage {
     #[cfg(feature = "multithreading")]
     hunk_reader: chd_thread::ChdHunkReader,
+
     #[cfg(not(feature = "multithreading"))]
-    chd: ChdFile,
+    chd: ChdFile<std::fs::File>,
     tracks: Vec<Track>,
 
+    // Intermediate buffer for the compressed data, needed for chd crate
+    #[cfg(not(feature = "multithreading"))]
+    comp_buf: Vec<u8>,
     hunk: Vec<u8>,
     current_hunk_no: u32,
     current_lba: u32,
@@ -70,44 +84,53 @@ impl ChdImage {
     pub fn open<P>(path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
-        let mut chd = ChdFile::open(path.as_ref())?;
+        let mut chd = ChdFile::open(
+            std::fs::File::open(path.as_ref())?,
+            None
+        )?;
 
-        let num_hunks = chd.num_hunks();
-        let hunk_len = chd.hunk_len();
+        let num_hunks = chd.header().hunk_count();
+        let hunk_len = chd.header().hunk_size();
         let sectors_per_hunk = hunk_len / BYTES_PER_SECTOR;
 
         if hunk_len % BYTES_PER_SECTOR != 0 {
             return Err(ChdImageError::WrongHunkSize);
         }
 
-        let mut hunk = vec![0; hunk_len as usize];
-        chd.read_hunk(0, &mut hunk[..])?;
+        let mut hunk = chd.get_hunksized_buffer();
+        let mut comp_buf = Vec::new();
+        chd.hunk(0)?.read_hunk_in(&mut comp_buf, &mut hunk)?;
 
         let mut tracks = Vec::new();
-        if let Ok(chd_tracks) = chd.cd_tracks() {
-            let mut current_lba = FIRST_TRACK_PREGAP;
-            let mut total_padding = 0;
-            for chd_track in chd_tracks {
-                let track_type = match chd_track.track_type.as_str() {
-                    "MODE1_RAW" => TrackType::Mode1,
-                    "MODE2_RAW" => TrackType::Mode2,
-                    "AUDIO" => TrackType::Audio,
-                    _ => return Err(ChdImageError::UnsupportedSectorFormat(chd_track.track_type)),
-                };
-                let start_lba = current_lba;
-                current_lba += chd_track.frames;
-                let padding_offset = total_padding;
-                let align_remainder = chd_track.frames % 4;
-                if align_remainder > 0 {
-                    total_padding += 4 - align_remainder;
-                }
-                tracks.push(Track {
-                    start_lba,
-                    track_type,
-                    padding_offset,
-                    track_info: chd_track
-                });
+
+        let metadata: Vec<ChdMetadata> = chd.metadata_refs().try_into()?;
+        let chd_tracks = track_metadata::cd_tracks(&metadata[..])?;
+        if chd_tracks.is_empty() {
+            return Err(ChdImageError::NoTracks);
+        }
+
+        let mut current_lba = FIRST_TRACK_PREGAP;
+        let mut total_padding = 0;
+        for chd_track in chd_tracks {
+            let track_type = match chd_track.track_type.as_str() {
+                "MODE1_RAW" => TrackType::Mode1,
+                "MODE2_RAW" => TrackType::Mode2,
+                "AUDIO" => TrackType::Audio,
+                _ => return Err(ChdImageError::UnsupportedSectorFormat(chd_track.track_type)),
+            };
+            let start_lba = current_lba;
+            current_lba += chd_track.frames;
+            let padding_offset = total_padding;
+            let align_remainder = chd_track.frames % 4;
+            if align_remainder > 0 {
+                total_padding += 4 - align_remainder;
             }
+            tracks.push(Track {
+                start_lba,
+                track_type,
+                padding_offset,
+                track_info: chd_track
+            });
         }
 
         let sbi_path = path.as_ref().with_extension("sbi");
@@ -127,6 +150,9 @@ impl ChdImage {
             hunk_reader: chd_thread::ChdHunkReader::new(chd),
             #[cfg(not(feature = "multithreading"))]
             chd,
+
+            #[cfg(not(feature = "multithreading"))]
+            comp_buf,
             hunk,
             current_hunk_no: 0,
             current_lba: 150,
@@ -160,8 +186,8 @@ impl ChdImage {
     }
 
     #[cfg(not(feature = "multithreading"))]
-    fn read_hunk(&mut self, hunk_no: u32) -> Result<(), ChdError> {
-        self.chd.read_hunk(hunk_no, &mut self.hunk[..])
+    fn read_hunk(&mut self, hunk_no: u32) -> Result<usize, ChdError> {
+        self.chd.hunk(hunk_no)?.read_hunk_in(&mut self.comp_buf, &mut self.hunk)
     }
 
     #[cfg(feature = "multithreading")]
