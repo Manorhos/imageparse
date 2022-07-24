@@ -70,6 +70,7 @@ pub struct ChdImage {
     hunk: Vec<u8>,
     current_hunk_no: u32,
     current_lba: u32,
+    location_invalid: bool,
     // Starts counting from 0
     current_track: usize,
 
@@ -156,6 +157,7 @@ impl ChdImage {
             hunk,
             current_hunk_no: 0,
             current_lba: 150,
+            location_invalid: false,
             current_track: 0,
 
             num_hunks,
@@ -164,7 +166,7 @@ impl ChdImage {
 
             tracks,
 
-            invalid_subq_lbas
+            invalid_subq_lbas,
         })
     }
 
@@ -225,6 +227,7 @@ impl ChdImage {
     }
 
     fn set_location_lba(&mut self, lba: u32) -> Result<(), ImageError> {
+        self.location_invalid = true;
         self.current_lba = lba;
         // TODO: Can we really assume that the first track's pregap is always
         // two seconds long?
@@ -243,6 +246,7 @@ impl ChdImage {
             }
             self.current_hunk_no = hunk_no;
         }
+        self.location_invalid = false;
         Ok(())
     }
 }
@@ -359,6 +363,9 @@ impl Image for ChdImage {
     fn copy_current_sector(&mut self, buf: &mut[u8]) -> Result<(), ImageError> {
         if buf.len() != 2352 {
             return Err(ChdImageError::WrongBufferSize.into())
+        }
+        if self.location_invalid {
+            return Err(ImageError::OutOfRange);
         }
         if self.current_lba < FIRST_TRACK_PREGAP {
             buf.fill(0);
