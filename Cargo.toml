@@ -17,7 +17,7 @@ vec_map = "0.8.2"
 serde = { version = "1.0.8", optional = true }
 serde_derive = { version = "1.0.8", optional = true }
 thiserror = "1.0"
-chd_rs = { package = "chd", git = "https://github.com/SnowflakePowered/chd-rs", rev="d9fbd9d", optional = true }
+chd_rs = { package = "chd", version = "0.1.4", optional = true }
 text_io = { version = "0.1.10", optional = true }
 lru = { version = "0.7.3", optional = true }
 
