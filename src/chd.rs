@@ -68,9 +68,8 @@ pub struct ChdImage {
     #[cfg(not(feature = "multithreading"))]
     comp_buf: Vec<u8>,
     hunk: Vec<u8>,
-    current_hunk_no: u32,
+    current_hunk_no: Option<u32>,
     current_lba: u32,
-    location_invalid: bool,
     // Starts counting from 0
     current_track: usize,
 
@@ -155,9 +154,8 @@ impl ChdImage {
             #[cfg(not(feature = "multithreading"))]
             comp_buf,
             hunk,
-            current_hunk_no: 0,
+            current_hunk_no: Some(0),
             current_lba: 150,
-            location_invalid: false,
             current_track: 0,
 
             num_hunks,
@@ -227,7 +225,6 @@ impl ChdImage {
     }
 
     fn set_location_lba(&mut self, lba: u32) -> Result<(), ImageError> {
-        self.location_invalid = true;
         self.current_lba = lba;
         // TODO: Can we really assume that the first track's pregap is always
         // two seconds long?
@@ -240,13 +237,14 @@ impl ChdImage {
 
         let hunk_no = self.hunk_no_for_lba(lba)?;
         debug!("set_location_lba {} -> hunk_no {}", lba, hunk_no);
-        if hunk_no != self.current_hunk_no {
+        if hunk_no != self.current_hunk_no.unwrap_or(u32::MAX) {
             if let Err(e) = self.read_hunk(hunk_no) {
+                self.current_hunk_no = None;
                 return Err(ChdImageError::from(e).into());
+            } else {
+                self.current_hunk_no = Some(hunk_no);
             }
-            self.current_hunk_no = hunk_no;
         }
-        self.location_invalid = false;
         Ok(())
     }
 }
@@ -364,9 +362,6 @@ impl Image for ChdImage {
         if buf.len() != 2352 {
             return Err(ChdImageError::WrongBufferSize.into())
         }
-        if self.location_invalid {
-            return Err(ImageError::OutOfRange);
-        }
         if self.current_lba < FIRST_TRACK_PREGAP {
             buf.fill(0);
             return Ok(());
@@ -376,23 +371,28 @@ impl Image for ChdImage {
         let sector_in_hunk = current_file_lba % self.sectors_per_hunk;
         let sector_start = (sector_in_hunk * BYTES_PER_SECTOR) as usize;
 
+        if self.current_hunk_no.is_none() {
+            warn!("Last read of this hunk failed, retrying");
+            self.set_location_lba(self.current_lba)?;
+        }
+        assert_eq!(self.current_hunk_no, Some(self.hunk_no_for_lba(self.current_lba)?));
+
         #[cfg(feature = "multithreading")]
         if self.hunk_reader.hunk_read_pending() {
             let now = std::time::Instant::now();
             let recv = self.hunk_reader.recv_completion();
             if let Ok(completion) = recv {
                 if let Ok(hunk_no) = completion {
-                    assert_eq!(self.current_hunk_no, hunk_no);
-                    if let Some(hunk) = self.hunk_reader.get_hunk_from_cache(hunk_no) {
-                        self.hunk = hunk;
-                        debug!("Receiving hunk took {:?}", now.elapsed());
-                    } else {
-                        error!("BUG: Hunk not in cache even though it should be");
-                    }
+                    assert_eq!(self.current_hunk_no, Some(hunk_no));
+                    self.hunk = self.hunk_reader.get_hunk_from_cache(hunk_no)
+                                    .expect("BUG: Hunk not in cache even though it should be");
+                    debug!("Receiving hunk took {:?}", now.elapsed());
                 } else {
+                    self.current_hunk_no = None;
                     return Err(ChdImageError::ChdError(completion.unwrap_err()).into());
                 }
             } else {
+                self.current_hunk_no = None;
                 return Err(ChdImageError::HunkRecvError(recv.unwrap_err()).into());
             }
         }
