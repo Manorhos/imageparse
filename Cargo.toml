@@ -9,6 +9,7 @@ license = "MIT/Apache-2.0"
 serde-support = ["serde", "serde_derive"]
 multithreading = ["lru"]
 chd = ["chd_rs", "text_io"]
+chd_verify_block_crc = ["chd_rs/verify_block_crc"]
 default = ["chd"]
 
 [dependencies]
