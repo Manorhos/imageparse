@@ -10,6 +10,7 @@ use std::sync::mpsc::RecvError;
 
 use chd_rs::{ChdError, ChdFile};
 use chd_rs::metadata::ChdMetadata;
+use chd_rs::header::ChdHeader;
 
 use log::{debug, info, trace, warn, error};
 
@@ -54,6 +55,12 @@ pub enum ChdImageError {
     HunkRecvError(RecvError),
     #[error("CHD contains no CDROM tracks")]
     NoTracks,
+    #[error("Recursion depth exceeded while opening parent CHDs")]
+    RecursionDepthExceeded,
+    #[error("Unsupported CHD format version")]
+    UnsupportedChdVersion,
+    #[error("Parent not found in given paths")]
+    ParentNotFound,
 }
 
 pub struct ChdImage {
@@ -84,11 +91,80 @@ impl ChdImage {
     pub fn open<P>(path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
-        let mut chd = ChdFile::open(
+        let chd = ChdFile::open(
             std::fs::File::open(path.as_ref())?,
             None
         )?;
+        Self::from_chd_file(chd, path)
+    }
 
+    /// Opens the CHD file referred to by `path` while opening parents recursively
+    /// searching through the files referred to by `possible_parents`.
+    ///
+    /// # Note
+    ///
+    /// Currently only supports V5 CHDs and expects `possible_parents` to only contain
+    /// paths to valid V5 CHD files.
+    pub fn open_with_parent<P, PP>(path: P, possible_parents: &[PP]) -> Result<ChdImage, ChdImageError>
+        where P: AsRef<Path>, PP: AsRef<Path>
+    {
+        if let Ok(image) = Self::open(path.as_ref()) {
+            Ok(image)
+        } else {
+            let parent = Self::open_parents_recursively(path.as_ref(), possible_parents, 0)?;
+            let chd = ChdFile::open(
+                std::fs::File::open(path.as_ref())?,
+                Some(parent)
+            )?;
+            Self::from_chd_file(chd, path)
+        }
+    }
+
+    fn open_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<ChdFile<std::fs::File>>, ChdImageError>
+        where P: AsRef<Path>
+    {
+        if depth >= 10 {
+            return Err(ChdImageError::RecursionDepthExceeded);
+        }
+
+        let mut file = std::fs::File::open(path)?;
+        let header = ChdHeader::try_read_header(&mut file)?;
+
+        if !header.has_parent() {
+            Ok(Box::new(ChdFile::open(
+                file,
+                None
+            )?))
+        } else {
+            let parent_sha1 = match header {
+                ChdHeader::V5Header(h) => h.parent_sha1,
+                _ => return Err(ChdImageError::UnsupportedChdVersion)
+            };
+
+            for p in possible_parents {
+                let mut parent_file = std::fs::File::open(p.as_ref())?;
+                let header = ChdHeader::try_read_header(&mut parent_file)?;
+                let sha1 = match header {
+                    ChdHeader::V5Header(h) => h.sha1,
+                    _ => return Err(ChdImageError::UnsupportedChdVersion)
+                };
+
+                if sha1 == parent_sha1 {
+                    let parent = Self::open_parents_recursively(p.as_ref(), possible_parents, depth + 1)?;
+                    return Ok(Box::new(ChdFile::open(
+                        file,
+                        Some(parent)
+                    )?))
+                }
+            }
+
+            Err(ChdImageError::ParentNotFound)
+        }
+    }
+
+    fn from_chd_file<P>(mut chd: ChdFile<std::fs::File>, path: P) -> Result<ChdImage, ChdImageError>
+        where P: AsRef<Path>
+    {
         let num_hunks = chd.header().hunk_count();
         let hunk_len = chd.header().hunk_size();
         let sectors_per_hunk = hunk_len / BYTES_PER_SECTOR;
