@@ -1,7 +1,7 @@
 use std::env;
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
     let filename = match env::args().nth(1) {
         Some(s) => s,
         None => panic!("No file supplied.")
