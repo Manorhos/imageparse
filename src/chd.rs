@@ -272,7 +272,7 @@ impl ChdImage {
         if self.hunk_reader.hunk_read_pending() {
             let time = std::time::Instant::now();
             let _ = self.hunk_reader.recv_completion();
-            warn!("Wasted {:?} waiting for old completion", time.elapsed());
+            debug!("Wasted {:?} waiting for old completion", time.elapsed());
         }
 
         if let Some(hunk) = self.hunk_reader.get_hunk_from_cache(hunk_no) {
@@ -302,6 +302,11 @@ impl ChdImage {
 
     fn set_location_lba(&mut self, lba: u32) -> Result<(), ImageError> {
         self.current_lba = lba;
+        // Set this to None so any upcoming errors making us return early don't
+        // leave us in an inconsistent state
+        let current_hunk_no = self.current_hunk_no;
+        self.current_hunk_no = None;
+
         // TODO: Can we really assume that the first track's pregap is always
         // two seconds long?
         if lba < FIRST_TRACK_PREGAP {
@@ -313,14 +318,13 @@ impl ChdImage {
 
         let hunk_no = self.hunk_no_for_lba(lba)?;
         debug!("set_location_lba {} -> hunk_no {}", lba, hunk_no);
-        if hunk_no != self.current_hunk_no.unwrap_or(u32::MAX) {
+        if hunk_no != current_hunk_no.unwrap_or(u32::MAX) {
             if let Err(e) = self.read_hunk(hunk_no) {
-                self.current_hunk_no = None;
+                debug!("set_location_lba: {:?}", e);
                 return Err(ChdImageError::from(e).into());
-            } else {
-                self.current_hunk_no = Some(hunk_no);
             }
         }
+        self.current_hunk_no = Some(hunk_no);
         Ok(())
     }
 }
