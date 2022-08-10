@@ -5,7 +5,10 @@ use imageparse::Image;
 use imageparse::chd::ChdImage;
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     if env::args().len() < 2 {
         println!("Testing tool that opens a CHD file with its parents recursively");

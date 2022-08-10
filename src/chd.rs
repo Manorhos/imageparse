@@ -103,8 +103,9 @@ impl ChdImage {
     ///
     /// # Note
     ///
-    /// Currently only supports V5 CHDs and expects `possible_parents` to only contain
-    /// paths to valid V5 CHD files.
+    /// Currently only supports V3-V5 CHDs and expects `possible_parents` to only contain
+    /// paths to valid V3-V5 CHD files. Will skip over files that fail to open or where the
+    /// version mismatches with the child CHD.
     pub fn open_with_parent<P, PP>(path: P, possible_parents: &[PP]) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>, PP: AsRef<Path>
     {
@@ -128,25 +129,33 @@ impl ChdImage {
         }
 
         let mut file = std::fs::File::open(path)?;
-        let header = ChdHeader::try_read_header(&mut file)?;
+        let child_header = ChdHeader::try_read_header(&mut file)?;
 
-        if !header.has_parent() {
+        if !child_header.has_parent() {
             Ok(Box::new(ChdFile::open(
                 file,
                 None
             )?))
         } else {
-            let parent_sha1 = match header {
-                ChdHeader::V5Header(h) => h.parent_sha1,
-                _ => return Err(ChdImageError::UnsupportedChdVersion)
+            let parent_sha1 = if let Some(sha1) = child_header.parent_sha1() {
+                sha1
+            } else {
+                return Err(ChdImageError::UnsupportedChdVersion)
             };
 
             for p in possible_parents {
-                let mut parent_file = std::fs::File::open(p.as_ref())?;
-                let header = ChdHeader::try_read_header(&mut parent_file)?;
-                let sha1 = match header {
-                    ChdHeader::V5Header(h) => h.sha1,
-                    _ => return Err(ChdImageError::UnsupportedChdVersion)
+                let sha1 = match Self::chd_header_sha1(p.as_ref()) {
+                    Ok(Some(sha1)) => sha1,
+                    Ok(None) => {
+                        warn!("Skipped possible parent CHD {:?} because \
+                            no SHA-1 is present in the header", p.as_ref());
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("Skipped possible parent CHD {:?} due \
+                            to error: {:?}", p.as_ref(), e);
+                        continue;
+                    }
                 };
 
                 if sha1 == parent_sha1 {
@@ -160,6 +169,12 @@ impl ChdImage {
 
             Err(ChdImageError::ParentNotFound)
         }
+    }
+
+    fn chd_header_sha1(path: &Path) -> Result<Option<[u8;20]>, ChdImageError> {
+        let mut parent_file = std::fs::File::open(path)?;
+        let chd_header = ChdHeader::try_read_header(&mut parent_file)?;
+        Ok(chd_header.sha1())
     }
 
     fn from_chd_file<P>(mut chd: ChdFile<std::fs::File>, path: P) -> Result<ChdImage, ChdImageError>
