@@ -33,7 +33,7 @@ fn main() {
             for (i, sha1) in sha1s.iter().enumerate() {
                 print!("Track {}: ", i + 1);
                 for x in sha1.iter() {
-                    print!("{:x}", x);
+                    print!("{:02x}", x);
                 }
                 println!("");
             }
