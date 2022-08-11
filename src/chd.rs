@@ -8,9 +8,9 @@ use std::convert::TryInto;
 use std::path::Path;
 use std::sync::mpsc::RecvError;
 
-use chd_rs::{ChdError, ChdFile};
-use chd_rs::metadata::ChdMetadata;
-use chd_rs::header::ChdHeader;
+use chd_rs::Chd;
+use chd_rs::metadata::Metadata;
+use chd_rs::header::Header;
 
 use log::{debug, info, trace, warn, error};
 
@@ -40,7 +40,7 @@ struct Track {
 #[derive(Debug, Error)]
 pub enum ChdImageError {
     #[error(transparent)]
-    ChdError(#[from] ChdError),
+    ChdError(#[from] chd_rs::Error),
     #[error(transparent)]
     IoError(#[from] std::io::Error),
     #[error("Error while parsing track metadata: {0}")]
@@ -68,7 +68,7 @@ pub struct ChdImage {
     hunk_reader: chd_thread::ChdHunkReader,
 
     #[cfg(not(feature = "multithreading"))]
-    chd: ChdFile<std::fs::File>,
+    chd: Chd<std::fs::File>,
     tracks: Vec<Track>,
 
     // Intermediate buffer for the compressed data, needed for chd crate
@@ -91,11 +91,11 @@ impl ChdImage {
     pub fn open<P>(path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
-        let chd = ChdFile::open(
+        let chd = Chd::open(
             std::fs::File::open(path.as_ref())?,
             None
         )?;
-        Self::from_chd_file(chd, path)
+        Self::from_chd(chd, path)
     }
 
     /// Opens the CHD file referred to by `path` while opening parents recursively
@@ -103,21 +103,24 @@ impl ChdImage {
     ///
     /// # Note
     ///
-    /// Currently only supports V3-V5 CHDs and expects `possible_parents` to only contain
-    /// paths to valid V3-V5 CHD files. Will skip over files that fail to open or where the
+    /// Currently only supports V3-V5 CHDs. Will skip over files that fail to open or where the
     /// version mismatches with the child CHD.
     pub fn open_with_parent<P, PP>(path: P, possible_parents: &[PP]) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>, PP: AsRef<Path>
     {
-        if let Ok(image) = Self::open(path.as_ref()) {
-            Ok(image)
+        let file = std::fs::File::open(path.as_ref())?;
+        let chd = Chd::open(file, None)?;
+
+        if !chd.header().has_parent() {
+            debug!("open_with_parent: Opening CHD without a parent as it doesn't require one");
+            Self::from_chd(chd, path)
         } else {
             let chd = Self::open_with_parents_recursively(path.as_ref(), possible_parents, 0)?;
-            Self::from_chd_file(*chd, path)
+            Self::from_chd(*chd, path)
         }
     }
 
-    fn open_with_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<ChdFile<std::fs::File>>, ChdImageError>
+    fn open_with_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<Chd<std::fs::File>>, ChdImageError>
         where P: AsRef<Path>
     {
         if depth >= 10 {
@@ -125,10 +128,10 @@ impl ChdImage {
         }
 
         let mut file = std::fs::File::open(path)?;
-        let child_header = ChdHeader::try_read_header(&mut file)?;
+        let child_header = Header::try_read_header(&mut file)?;
 
         if !child_header.has_parent() {
-            Ok(Box::new(ChdFile::open(
+            Ok(Box::new(Chd::open(
                 file,
                 None
             )?))
@@ -155,8 +158,9 @@ impl ChdImage {
                 };
 
                 if sha1 == parent_sha1 {
+                    debug!("Opening child {:?} with parent {:?}", path, p.as_ref());
                     let parent = Self::open_with_parents_recursively(p.as_ref(), possible_parents, depth + 1)?;
-                    return Ok(Box::new(ChdFile::open(
+                    return Ok(Box::new(Chd::open(
                         file,
                         Some(parent)
                     )?))
@@ -169,11 +173,11 @@ impl ChdImage {
 
     fn chd_header_sha1(path: &Path) -> Result<Option<[u8;20]>, ChdImageError> {
         let mut parent_file = std::fs::File::open(path)?;
-        let chd_header = ChdHeader::try_read_header(&mut parent_file)?;
+        let chd_header = Header::try_read_header(&mut parent_file)?;
         Ok(chd_header.sha1())
     }
 
-    fn from_chd_file<P>(mut chd: ChdFile<std::fs::File>, path: P) -> Result<ChdImage, ChdImageError>
+    fn from_chd<P>(mut chd: Chd<std::fs::File>, path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
         let num_hunks = chd.header().hunk_count();
@@ -190,7 +194,7 @@ impl ChdImage {
 
         let mut tracks = Vec::new();
 
-        let metadata: Vec<ChdMetadata> = chd.metadata_refs().try_into()?;
+        let metadata: Vec<Metadata> = chd.metadata_refs().try_into()?;
         let chd_tracks = track_metadata::cd_tracks(&metadata[..])?;
         if chd_tracks.is_empty() {
             return Err(ChdImageError::NoTracks);
@@ -273,7 +277,7 @@ impl ChdImage {
     }
 
     #[cfg(not(feature = "multithreading"))]
-    fn read_hunk(&mut self, hunk_no: u32) -> Result<usize, ChdError> {
+    fn read_hunk(&mut self, hunk_no: u32) -> Result<usize, chd_rs::Error> {
         self.chd.hunk(hunk_no)?.read_hunk_in(&mut self.comp_buf, &mut self.hunk)
     }
 

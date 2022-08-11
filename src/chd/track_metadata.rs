@@ -1,5 +1,5 @@
 use chd_rs::metadata::KnownMetadata::{CdRomTrack, CdRomTrack2};
-use chd_rs::metadata::{ChdMetadata, ChdMetadataTag};
+use chd_rs::metadata::{Metadata, MetadataTag};
 
 use text_io::try_scan;
 
@@ -69,7 +69,7 @@ impl CdTrackInfo {
     }
 }
 
-pub fn cd_tracks(metadata: &[ChdMetadata]) -> Result<Vec<CdTrackInfo>, text_io::Error> {
+pub fn cd_tracks(metadata: &[Metadata]) -> Result<Vec<CdTrackInfo>, text_io::Error> {
     let mut tracks = Vec::new();
 
     for x in metadata.iter() {

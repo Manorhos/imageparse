@@ -2,7 +2,7 @@ use std::{sync::mpsc::{self, RecvError, SendError}, sync::{Arc, Mutex}, thread};
 
 use log::{debug, error};
 
-use chd_rs::{ChdFile, ChdError};
+use chd_rs::Chd;
 use lru::LruCache;
 
 
@@ -13,10 +13,10 @@ const NUM_CMD_SLOTS: usize = 2;
 const CACHE_CAPACITY: usize = 100;
 
 struct ChdThread {
-    chd: ChdFile<std::fs::File>,
+    chd: Chd<std::fs::File>,
     cmd_receiver: mpsc::Receiver<Command>,
     cmd_while_prefetching: Option<Command>,
-    hunk_sender: mpsc::SyncSender<Result<u32, ChdError>>,
+    hunk_sender: mpsc::SyncSender<Result<u32, chd_rs::Error>>,
 
     num_hunks: u32,
 
@@ -29,9 +29,9 @@ struct ChdThread {
 }
 
 impl ChdThread {
-    fn start(chd: ChdFile<std::fs::File>,
+    fn start(chd: Chd<std::fs::File>,
         cmd_receiver: mpsc::Receiver<Command>,
-        hunk_sender: mpsc::SyncSender<Result<u32, ChdError>>)
+        hunk_sender: mpsc::SyncSender<Result<u32, chd_rs::Error>>)
         -> (thread::JoinHandle<()>, Arc<Mutex<LruCache<u32, Vec<u8>>>>)
     {
         let num_hunks = chd.header().hunk_count();
@@ -72,7 +72,7 @@ impl ChdThread {
         }
     }
 
-    fn handle_command(&mut self, cmd: Command) -> Result<(), SendError<Result<u32, ChdError>>> {
+    fn handle_command(&mut self, cmd: Command) -> Result<(), SendError<Result<u32, chd_rs::Error>>> {
         debug!("Received command {:?}", cmd);
         match cmd {
             Command::ReadHunk(hunk_no) => {
@@ -119,9 +119,9 @@ impl ChdThread {
         Ok(())
     }
 
-    fn read_hunk_to_cache(&mut self, hunk_no: u32) -> Result<u32, ChdError> {
+    fn read_hunk_to_cache(&mut self, hunk_no: u32) -> Result<u32, chd_rs::Error> {
         if hunk_no >= self.num_hunks {
-            return Err(ChdError::HunkOutOfRange);
+            return Err(chd_rs::Error::HunkOutOfRange);
         }
 
         // Try to hold the lock for as little at a time as possible as I/O follows.
@@ -161,11 +161,11 @@ pub struct ChdHunkReader {
     hunk_read_pending: bool,
 
     cmd_sender: mpsc::SyncSender<Command>,
-    completion_receiver: mpsc::Receiver<Result<u32, ChdError>>,
+    completion_receiver: mpsc::Receiver<Result<u32, chd_rs::Error>>,
 }
 
 impl ChdHunkReader {
-    pub fn new(chd: ChdFile<std::fs::File>) -> ChdHunkReader {
+    pub fn new(chd: Chd<std::fs::File>) -> ChdHunkReader {
         let (cmd_sender, cmd_receiver) = mpsc::sync_channel(NUM_CMD_SLOTS);
         let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
 
@@ -190,7 +190,7 @@ impl ChdHunkReader {
 
     // Completion contains Ok(read_hunk_no) or the error that occured when
     // trying to read the requested hunk
-    pub fn recv_completion(&mut self) -> Result<Result<u32, ChdError>, RecvError>  {
+    pub fn recv_completion(&mut self) -> Result<Result<u32, chd_rs::Error>, RecvError>  {
         assert!(self.hunk_read_pending);
         let completion = self.completion_receiver.recv();
         self.hunk_read_pending = false;
