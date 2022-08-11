@@ -112,16 +112,12 @@ impl ChdImage {
         if let Ok(image) = Self::open(path.as_ref()) {
             Ok(image)
         } else {
-            let parent = Self::open_parents_recursively(path.as_ref(), possible_parents, 0)?;
-            let chd = ChdFile::open(
-                std::fs::File::open(path.as_ref())?,
-                Some(parent)
-            )?;
-            Self::from_chd_file(chd, path)
+            let chd = Self::open_with_parents_recursively(path.as_ref(), possible_parents, 0)?;
+            Self::from_chd_file(*chd, path)
         }
     }
 
-    fn open_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<ChdFile<std::fs::File>>, ChdImageError>
+    fn open_with_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<ChdFile<std::fs::File>>, ChdImageError>
         where P: AsRef<Path>
     {
         if depth >= 10 {
@@ -159,7 +155,7 @@ impl ChdImage {
                 };
 
                 if sha1 == parent_sha1 {
-                    let parent = Self::open_parents_recursively(p.as_ref(), possible_parents, depth + 1)?;
+                    let parent = Self::open_with_parents_recursively(p.as_ref(), possible_parents, depth + 1)?;
                     return Ok(Box::new(ChdFile::open(
                         file,
                         Some(parent)
