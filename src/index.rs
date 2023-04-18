@@ -81,6 +81,9 @@ impl MsfIndex {
         m as u32 * 60 * 75 + s as u32 * 75 + f as u32
     }
 
+    /// Returns the inner tuple of (minutes, seconds, frames) converted to
+    /// [Binary-Coded Decimal](https://en.wikipedia.org/wiki/Binary-coded_decimal).
+    /// For example, a value of 99 will become 0x99.
     pub fn to_bcd_values(&self) -> (u8, u8, u8) {
         let MsfIndex(m,s,f) = *self;
         let m_bcd = ((m / 10) << 4) + (m % 10);
@@ -89,6 +92,12 @@ impl MsfIndex {
         trace!("Converted from ({}, {}, {}) to (0x{:x}, 0x{:x}, 0x{:x})",
                m, s, f, m_bcd, s_bcd, f_bcd);
         (m_bcd, s_bcd, f_bcd)
+    }
+
+    /// Returns the inner tuple of (minutes, seconds, frames).
+    pub fn to_raw_values(&self) -> (u8, u8, u8) {
+        let MsfIndex(m,s,f) = *self;
+        (m, s, f)
     }
 }
 
