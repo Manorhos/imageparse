@@ -6,7 +6,7 @@ mod sbi;
 
 pub use self::index::{MsfIndex, MsfIndexError};
 
-use std::{path::Path};
+use std::path::Path;
 #[cfg(feature = "chd")]
 use std::{fs::File, io::Read};
 

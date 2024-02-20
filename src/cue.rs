@@ -230,7 +230,7 @@ impl Cuesheet {
     pub fn from_cue_file<P>(path: P) -> Result<Cuesheet, CueError>
         where P: AsRef<Path>
     {
-        let mut cue_file = File::open(path.as_ref().clone())?;
+        let mut cue_file = File::open(path.as_ref())?;
         let mut cue_string = String::new();
         cue_file.read_to_string(&mut cue_string)?;
 
