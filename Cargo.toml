@@ -10,6 +10,7 @@ serde-support = ["serde", "serde_derive"]
 multithreading = ["lru"]
 chd = ["chd_rs", "text_io"]
 chd_verify_block_crc = ["chd_rs/verify_block_crc"]
+chd_max_perf = ["chd_rs/max_perf"]
 default = ["chd"]
 
 [dependencies]
@@ -18,7 +19,7 @@ vec_map = "0.8.2"
 serde = { version = "1.0.8", optional = true }
 serde_derive = { version = "1.0.8", optional = true }
 thiserror = "1.0"
-chd_rs = { package = "chd", version = "0.2.3", optional = true }
+chd_rs = { package = "chd", version = "0.3.1", optional = true }
 text_io = { version = "0.1.10", optional = true }
 lru = { version = "0.7.3", optional = true }
 sha-1 = "0.10.0"
