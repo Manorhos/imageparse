@@ -35,7 +35,7 @@ impl ChdThread {
         -> (thread::JoinHandle<()>, Arc<Mutex<LruCache<u32, Vec<u8>>>>)
     {
         let num_hunks = chd.header().hunk_count();
-        let hunk_cache = Arc::new(Mutex::new(LruCache::new(CACHE_CAPACITY)));
+        let hunk_cache = Arc::new(Mutex::new(LruCache::new(std::num::NonZero::new(CACHE_CAPACITY).unwrap())));
         let chd_thread = ChdThread {
             chd,
             cmd_receiver,
