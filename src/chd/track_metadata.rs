@@ -4,6 +4,7 @@ use chd_rs::metadata::{Metadata, MetadataTag};
 use text_io::try_scan;
 
 #[derive(Debug)]
+#[allow(unused)]
 pub struct CdTrackInfo {
     pub track_no: u8,
     pub track_type: String,
