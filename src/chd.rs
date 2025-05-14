@@ -310,6 +310,10 @@ impl ChdImage {
     fn hunk_no_for_lba(&self, lba: u32) -> Result<u32, ImageError> {
         let current_track = &self.tracks[self.current_track];
 
+        if lba < FIRST_TRACK_PREGAP {
+            return Err(ImageError::OutOfRange);
+        }
+
         let lba = lba + current_track.padding_offset - FIRST_TRACK_PREGAP;
         let hunk_no = lba / self.sectors_per_hunk;
         trace!("hunk_no_for_lba {} -> {}", lba, hunk_no);
