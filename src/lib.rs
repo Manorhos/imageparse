@@ -42,35 +42,6 @@ pub trait Image {
     fn current_track_type(&self) -> Result<TrackType, ImageError>;
     fn first_track_type(&self) -> TrackType;
     fn track_start(&self, track: u8) -> Result<MsfIndex, ImageError>;
-    fn track_sha1s(&mut self) -> Result<Vec<[u8; 20]>, ImageError> {
-        use sha1::{Sha1, Digest};
-        let old_location = self.current_global_msf();
-
-        let mut v = Vec::new();
-
-        self.set_location(MsfIndex::new(0,2,0).unwrap())?;
-
-        for _ in 0..self.num_tracks() {
-            let mut hasher = Sha1::new();
-            let mut sector_buf = [0u8; 2352];
-            let mut event = None;
-            while event != Some(Event::TrackChange) && event != Some(Event::EndOfDisc) {
-                self.copy_current_sector(&mut sector_buf)?;
-                hasher.update(&sector_buf);
-                event = self.advance_position()?;
-            }
-
-            v.push(hasher.finalize().into());
-        }
-
-        if let Ok(loc) = old_location {
-            if let Err(e) = self.set_location(loc) {
-                error!("Failed to restore old location: {:?}", e);
-            }
-        }
-
-        Ok(v)
-    }
 
     fn set_location(&mut self, target: MsfIndex) -> Result<(), ImageError>;
     fn set_location_to_track(&mut self, track: u8) -> Result<(), ImageError>;
@@ -100,6 +71,38 @@ pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
     }
 
     Err(ImageError::UnsupportedFormat)
+}
+
+pub fn track_sha1s<I>(image: &mut I) -> Result<Vec<[u8; 20]>, ImageError>
+    where I: Image
+{
+    use sha1::{Sha1, Digest};
+    let old_location = image.current_global_msf();
+
+    let mut v = Vec::new();
+
+    image.set_location(MsfIndex::new(0,2,0).unwrap())?;
+
+    for _ in 0..image.num_tracks() {
+        let mut hasher = Sha1::new();
+        let mut sector_buf = [0u8; 2352];
+        let mut event = None;
+        while event != Some(Event::TrackChange) && event != Some(Event::EndOfDisc) {
+            image.copy_current_sector(&mut sector_buf)?;
+            hasher.update(&sector_buf);
+            event = image.advance_position()?;
+        }
+
+        v.push(hasher.finalize().into());
+    }
+
+    if let Ok(loc) = old_location {
+        if let Err(e) = image.set_location(loc) {
+            error!("Failed to restore old location: {:?}", e);
+        }
+    }
+
+    Ok(v)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

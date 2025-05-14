@@ -26,7 +26,7 @@ fn main() {
         println!("Successfully opened CHD!");
         println!("Tracks: {}", chd.num_tracks());
 
-        let sha1s = chd.track_sha1s();
+        let sha1s = imageparse::track_sha1s(&mut chd);
 
         if let Ok(ref sha1s) = sha1s {
             println!("SHA-1 hashes for tracks:");
