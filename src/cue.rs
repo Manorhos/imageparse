@@ -227,10 +227,14 @@ fn parse_pregap_line(line: &str) -> Result<MsfIndex, CueError> {
 }
 
 impl Cuesheet {
-    pub fn from_cue_file<P>(path: P) -> Result<Cuesheet, CueError>
+    pub fn open<P>(path: P) -> Result<Cuesheet, CueError>
         where P: AsRef<Path>
     {
-        let mut cue_file = File::open(path.as_ref())?;
+        Self::_open(path.as_ref())
+    }
+
+    pub fn _open(path: &Path) -> Result<Cuesheet, CueError> {
+        let mut cue_file = File::open(path)?;
         let mut cue_string = String::new();
         cue_file.read_to_string(&mut cue_string)?;
 
@@ -255,7 +259,7 @@ impl Cuesheet {
                             current_bin_file.finalize_tracks()?;
                             bin_files.push(current_bin_file);
                         }
-                        current_bin_file = Some(parse_file_line(line, path.as_ref().parent())?);
+                        current_bin_file = Some(parse_file_line(line, path.parent())?);
                         if current_bin_file.as_ref().unwrap().bin_mode != BinMode::Binary {
                             warn!("No bin file modes apart from Binary supported yet.");
                         }
@@ -317,7 +321,7 @@ impl Cuesheet {
             return Err(CueError::NoBinFiles);
         }
 
-        let sbi_path = path.as_ref().with_extension("sbi");
+        let sbi_path = path.with_extension("sbi");
         let mut invalid_subq_lbas = None;
         if sbi_path.exists() {
             match crate::sbi::load_sbi_file(sbi_path) {

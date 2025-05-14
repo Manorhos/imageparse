@@ -91,8 +91,12 @@ impl ChdImage {
     pub fn open<P>(path: P) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>
     {
+        ChdImage::_open(path.as_ref())
+    }
+
+    fn _open(path: &Path) -> Result<ChdImage, ChdImageError> {
         let chd = Chd::open(
-            std::fs::File::open(path.as_ref())?,
+            std::fs::File::open(path)?,
             None
         )?;
         Self::from_chd(chd, path)
@@ -108,21 +112,24 @@ impl ChdImage {
     pub fn open_with_parent<P, PP>(path: P, possible_parents: &[PP]) -> Result<ChdImage, ChdImageError>
         where P: AsRef<Path>, PP: AsRef<Path>
     {
-        let file = std::fs::File::open(path.as_ref())?;
+        let possible_parents: Vec<&Path> = possible_parents.iter().map(|x| x.as_ref()).collect();
+        Self::_open_with_parent(path.as_ref(), &possible_parents)
+    }
+
+    fn _open_with_parent(path: &Path, possible_parents: &[&Path]) -> Result<ChdImage, ChdImageError> {
+        let file = std::fs::File::open(path)?;
         let chd = Chd::open(file, None)?;
 
         if !chd.header().has_parent() {
             debug!("open_with_parent: Opening CHD without a parent as it doesn't require one");
             Self::from_chd(chd, path)
         } else {
-            let chd = Self::open_with_parents_recursively(path.as_ref(), possible_parents, 0)?;
+            let chd = Self::open_with_parents_recursively(path, possible_parents, 0)?;
             Self::from_chd(*chd, path)
         }
     }
 
-    fn open_with_parents_recursively<P>(path: &Path, possible_parents: &[P], depth: u8) -> Result<Box<Chd<std::fs::File>>, ChdImageError>
-        where P: AsRef<Path>
-    {
+    fn open_with_parents_recursively(path: &Path, possible_parents: &[&Path], depth: u8) -> Result<Box<Chd<std::fs::File>>, ChdImageError> {
         if depth >= 10 {
             return Err(ChdImageError::RecursionDepthExceeded);
         }
@@ -147,18 +154,18 @@ impl ChdImage {
                     Ok(Some(sha1)) => sha1,
                     Ok(None) => {
                         warn!("Skipped possible parent CHD {:?} because \
-                            no SHA-1 is present in the header", p.as_ref());
+                            no SHA-1 is present in the header", p);
                         continue;
                     }
                     Err(e) => {
                         warn!("Skipped possible parent CHD {:?} due \
-                            to error: {:?}", p.as_ref(), e);
+                            to error: {:?}", p, e);
                         continue;
                     }
                 };
 
                 if sha1 == parent_sha1 {
-                    debug!("Opening child {:?} with parent {:?}", path, p.as_ref());
+                    debug!("Opening child {:?} with parent {:?}", path, p);
                     let parent = Self::open_with_parents_recursively(p.as_ref(), possible_parents, depth + 1)?;
                     return Ok(Box::new(Chd::open(
                         file,
@@ -177,9 +184,7 @@ impl ChdImage {
         Ok(chd_header.sha1())
     }
 
-    fn from_chd<P>(mut chd: Chd<std::fs::File>, path: P) -> Result<ChdImage, ChdImageError>
-        where P: AsRef<Path>
-    {
+    fn from_chd(mut chd: Chd<std::fs::File>, path: &Path) -> Result<ChdImage, ChdImageError> {
         let num_hunks = chd.header().hunk_count();
         let hunk_len = chd.header().hunk_size();
         let sectors_per_hunk = hunk_len / BYTES_PER_SECTOR;
@@ -224,7 +229,7 @@ impl ChdImage {
             });
         }
 
-        let sbi_path = path.as_ref().with_extension("sbi");
+        let sbi_path = path.with_extension("sbi");
         let mut invalid_subq_lbas = None;
         if sbi_path.exists() {
             match crate::sbi::load_sbi_file(sbi_path) {

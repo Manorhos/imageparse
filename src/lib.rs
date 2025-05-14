@@ -95,7 +95,7 @@ pub fn open_file<P>(path: P) -> Result<Box<dyn Image>, ImageError>
 
     if let Some(ext) = path.as_ref().extension() {
         if ext.to_string_lossy().to_lowercase() == "cue" {
-            return Ok(Box::new(cue::Cuesheet::from_cue_file(path)?));
+            return Ok(Box::new(cue::Cuesheet::open(path)?));
         }
     }
 
